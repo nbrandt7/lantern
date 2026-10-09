@@ -1,0 +1,2574 @@
+{
+  "name": "lantern",
+  "displayName": "Lantern for Dataverse",
+  "description": "A suite for Dynamics 365 and Power Platform developers who work across many clients: client folders and repos, environments and app registrations, pull with review, web resource, plug-in, PCF, and Power Pages deployment, Custom APIs, SQL and FetchXML queries, record inspection, plug-in traces and steps, metadata, and Dataverse-aware IntelliSense.",
+  "version": "0.9.5",
+  "publisher": "local",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Snippets"
+  ],
+  "keywords": [
+    "dataverse",
+    "dynamics 365",
+    "power platform",
+    "web resources",
+    "plugins",
+    "xrm",
+    "fetchxml",
+    "sql",
+    "metadata",
+    "plugin trace"
+  ],
+  "icon": "media/icon.png",
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/client.json",
+    "workspaceContains:**/*.cdsproj"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lantern",
+          "title": "Lantern",
+          "icon": "media/lantern.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "lanternResults",
+          "title": "Query Results",
+          "icon": "media/lantern.svg"
+        }
+      ]
+    },
+    "views": {
+      "lantern": [
+        {
+          "id": "lantern.clients",
+          "name": "Clients",
+          "icon": "media/lantern.svg"
+        },
+        {
+          "id": "lantern.review",
+          "name": "Pull Review",
+          "when": "lantern.reviewActive"
+        }
+      ],
+      "lanternResults": [
+        {
+          "type": "webview",
+          "id": "lantern.results",
+          "name": "Query Results"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "lantern.clients",
+        "contents": "No client folders yet.\n[New Client](command:lantern.newClient)\nFirst time here? Set up this folder to hold client folders:\n[Initialize Workspace](command:lantern.initWorkspace)",
+        "when": "workspaceFolderCount > 0"
+      },
+      {
+        "view": "lantern.clients",
+        "contents": "Open the folder that holds (or will hold) your client folders.\n[Open Folder](command:vscode.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      }
+    ],
+    "commands": [
+      {
+        "command": "lantern.initWorkspace",
+        "title": "Initialize Workspace",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.newClient",
+        "title": "New Client…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.configureClient",
+        "title": "Configure as Client",
+        "category": "Lantern",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "lantern.openClientConfig",
+        "title": "Edit client.json",
+        "category": "Lantern",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "lantern.openInBrowser",
+        "title": "Open Org in Browser",
+        "category": "Lantern",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "lantern.refresh",
+        "title": "Refresh",
+        "category": "Lantern",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lantern.clientActions",
+        "title": "Client Actions…",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.testConnection",
+        "title": "Test Connection",
+        "category": "Lantern",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "lantern.signOut",
+        "title": "Clear Cached Tokens",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.pull",
+        "title": "Pull from Dataverse",
+        "category": "Lantern",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lantern.review.open",
+        "title": "Open Diff",
+        "category": "Lantern",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "lantern.review.takeDataverse",
+        "title": "Take Dataverse Version",
+        "category": "Lantern",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lantern.review.keepMine",
+        "title": "Keep My Version",
+        "category": "Lantern",
+        "icon": "$(check)"
+      },
+      {
+        "command": "lantern.review.takeAllPending",
+        "title": "Take Dataverse for All Undecided",
+        "category": "Lantern",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lantern.review.keepAllPending",
+        "title": "Keep Mine for All Undecided",
+        "category": "Lantern",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "lantern.review.apply",
+        "title": "Apply Choices",
+        "category": "Lantern",
+        "icon": "$(save-all)"
+      },
+      {
+        "command": "lantern.review.cancel",
+        "title": "Discard Review",
+        "category": "Lantern",
+        "icon": "$(close)"
+      },
+      {
+        "command": "lantern.pushWebResource",
+        "title": "Push to Dataverse",
+        "category": "Lantern",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lantern.compareWebResource",
+        "title": "Compare with Dataverse",
+        "category": "Lantern",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "lantern.newFormScript",
+        "title": "New Form Script…",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.pushPlugin",
+        "title": "Build and Push Plug-in",
+        "category": "Lantern",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "lantern.generateJsTypes",
+        "title": "Generate JS Form Types (XrmDefinitelyTyped)",
+        "category": "Lantern",
+        "icon": "$(symbol-interface)"
+      },
+      {
+        "command": "lantern.generateEarlyBound",
+        "title": "Generate C# Early-Bound Classes",
+        "category": "Lantern",
+        "icon": "$(symbol-class)"
+      },
+      {
+        "command": "lantern.metadata.refresh",
+        "title": "Refresh Metadata",
+        "category": "Lantern",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lantern.metadata.copyName",
+        "title": "Copy Name",
+        "category": "Lantern",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "lantern.metadata.insertGetAttribute",
+        "title": "Insert getAttribute(…)",
+        "category": "Lantern",
+        "icon": "$(insert)"
+      },
+      {
+        "command": "lantern.metadata.insertGetControl",
+        "title": "Insert getControl(…)",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.openTable",
+        "title": "Open Table Reference",
+        "category": "Lantern",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "lantern.metadata.findTable",
+        "title": "Find Table…",
+        "category": "Lantern",
+        "icon": "$(search)"
+      },
+      {
+        "command": "lantern.metadata.setFileTable",
+        "title": "Set Table for This File…",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.query.new",
+        "title": "New Query",
+        "category": "Lantern",
+        "icon": "$(database)"
+      },
+      {
+        "command": "lantern.query.run",
+        "title": "Run Query",
+        "category": "Lantern",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lantern.query.showFetchXml",
+        "title": "Show FetchXML for Query",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.findUsages",
+        "title": "Find Where Column Is Used",
+        "category": "Lantern",
+        "icon": "$(references)"
+      },
+      {
+        "command": "lantern.traces.refresh",
+        "title": "Refresh Traces",
+        "category": "Lantern",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lantern.traces.filter",
+        "title": "Filter Traces…",
+        "category": "Lantern",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "lantern.traces.open",
+        "title": "Open Trace",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.traces.enableLogging",
+        "title": "Turn On Trace Logging",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.editUserSettings",
+        "title": "Edit User Settings…",
+        "category": "Lantern",
+        "icon": "$(person)"
+      },
+      {
+        "command": "lantern.metadata.selectTop",
+        "title": "Select Top 1000 Rows",
+        "category": "Lantern",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lantern.metadata.scriptSelect",
+        "title": "New Query with All Columns",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.countRows",
+        "title": "Count Rows",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.openTableInBrowser",
+        "title": "Open Table in Browser",
+        "category": "Lantern",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "lantern.metadata.newRecordInBrowser",
+        "title": "New Record in Browser",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.addEarlyBound",
+        "title": "Add to C# Early-Bound Classes",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.valueCounts",
+        "title": "Show Value Counts",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.selectWithColumn",
+        "title": "Select Rows with a Value",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.insertSetValue",
+        "title": "Insert setValue(…)",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.insertUiGet",
+        "title": "Insert formContext.ui Reference",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.logicalName",
+        "title": "Logical Name",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.schemaName",
+        "title": "Schema Name",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.displayName",
+        "title": "Display Name",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.entitySetName",
+        "title": "Entity Set Name (Web API)",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.webApiUrl",
+        "title": "Web API URL",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.name",
+        "title": "Name",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.label",
+        "title": "Label",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.value",
+        "title": "Value",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.copy.id",
+        "title": "ID",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.copyCell",
+        "title": "Copy Value",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.copyRow",
+        "title": "Copy Row",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.copyColumn",
+        "title": "Copy Column",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.openRecord",
+        "title": "Open Record in Browser",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.goToHandler",
+        "title": "Go to Function",
+        "category": "Lantern",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lantern.publishAll",
+        "title": "Publish All Customizations",
+        "category": "Lantern",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "lantern.refreshNode",
+        "title": "Refresh",
+        "category": "Lantern",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lantern.copyText",
+        "title": "Copy",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.steps.enable",
+        "title": "Turn On Step",
+        "category": "Lantern",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "lantern.steps.disable",
+        "title": "Turn Off Step",
+        "category": "Lantern",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "lantern.steps.openCode",
+        "title": "Open Plug-in Class",
+        "category": "Lantern",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lantern.jobs.filter",
+        "title": "Filter System Jobs…",
+        "category": "Lantern",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "lantern.jobs.open",
+        "title": "Open Job Details",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.jobs.openRegarding",
+        "title": "Open Regarding Record in Browser",
+        "category": "Lantern",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "lantern.envvars.edit",
+        "title": "Edit Value…",
+        "category": "Lantern",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "lantern.record.inspect",
+        "title": "Inspect a Record…",
+        "category": "Lantern",
+        "icon": "$(search)"
+      },
+      {
+        "command": "lantern.record.openFromClipboard",
+        "title": "Open Record from Clipboard",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.record.audit",
+        "title": "Audit History for a Record…",
+        "category": "Lantern",
+        "icon": "$(history)"
+      },
+      {
+        "command": "lantern.results.inspectRecord",
+        "title": "Inspect Record",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.auditRecord",
+        "title": "Show Audit History",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.results.auditColumn",
+        "title": "Show Audit History for This Column",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.query.runAs",
+        "title": "Run Query As…",
+        "category": "Lantern",
+        "icon": "$(person)"
+      },
+      {
+        "command": "lantern.query.copyAs",
+        "title": "Copy Query as Code…",
+        "category": "Lantern",
+        "icon": "$(symbol-snippet)"
+      },
+      {
+        "command": "lantern.results.copyAs",
+        "title": "Copy as Code",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.recentlyCreated",
+        "title": "Recently Created Rows",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.recentlyModified",
+        "title": "Recently Changed Rows",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.inactive",
+        "title": "Inactive Rows",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.byStatus",
+        "title": "Rows by Status Reason",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.byOwner",
+        "title": "Rows by Owner",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.missingRequired",
+        "title": "Rows Missing Required Values",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.findDuplicates",
+        "title": "Find Duplicates…",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.duplicateValues",
+        "title": "Find Duplicate Values",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.missingValue",
+        "title": "Rows Where This Is Empty",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.query.extraSpaces",
+        "title": "Values with Leading or Trailing Spaces",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.signInAs",
+        "title": "Sign In As…",
+        "category": "Lantern",
+        "icon": "$(account)"
+      },
+      {
+        "command": "lantern.solutions.add",
+        "title": "Add Solution…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.solutions.addLocal",
+        "title": "Add to client.json",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.solutions.remove",
+        "title": "Remove from Client",
+        "category": "Lantern",
+        "icon": "$(close)"
+      },
+      {
+        "command": "lantern.solutions.reveal",
+        "title": "Reveal Solution Folder",
+        "category": "Lantern",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "lantern.webResources.open",
+        "title": "Open Web Resource",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.dependencies.show",
+        "title": "Show Dependencies",
+        "category": "Lantern",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "lantern.code.analyzeFunction",
+        "title": "What Does This Function Touch?",
+        "category": "Lantern",
+        "icon": "$(symbol-function)"
+      },
+      {
+        "command": "lantern.code.outline",
+        "title": "Library Outline",
+        "category": "Lantern",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "lantern.steps.analyze",
+        "title": "Check Step Against Its Code",
+        "category": "Lantern",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "lantern.environments.switch",
+        "title": "Switch Environment…",
+        "category": "Lantern",
+        "icon": "$(server-environment)"
+      },
+      {
+        "command": "lantern.environments.add",
+        "title": "Add Environment…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.environments.compare",
+        "title": "Compare Environments…",
+        "category": "Lantern",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "lantern.solutions.export",
+        "title": "Export Solution…",
+        "category": "Lantern",
+        "icon": "$(export)"
+      },
+      {
+        "command": "lantern.solutions.import",
+        "title": "Import Solution…",
+        "category": "Lantern",
+        "icon": "$(desktop-download)"
+      },
+      {
+        "command": "lantern.solutions.copyTo",
+        "title": "Copy Solution to Environment…",
+        "category": "Lantern",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "lantern.solutions.bumpVersion",
+        "title": "Change Solution Version…",
+        "category": "Lantern",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "lantern.solutions.check",
+        "title": "Run Solution Checker",
+        "category": "Lantern",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "lantern.solutions.document",
+        "title": "Generate Documentation",
+        "category": "Lantern",
+        "icon": "$(book)"
+      },
+      {
+        "command": "lantern.steps.register",
+        "title": "Register Plug-in Step…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.traces.openClass",
+        "title": "Go to Plug-in Class",
+        "category": "Lantern",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lantern.queries.save",
+        "title": "Save Query…",
+        "category": "Lantern",
+        "icon": "$(save)"
+      },
+      {
+        "command": "lantern.queries.openRecent",
+        "title": "Open Query",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.metadata.importCsv",
+        "title": "Import CSV…",
+        "category": "Lantern",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lantern.security.role",
+        "title": "View Security Role…",
+        "category": "Lantern",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "lantern.security.whyAccess",
+        "title": "Check a User's Access to a Record…",
+        "category": "Lantern",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "lantern.typescript.compileAndPush",
+        "title": "Compile and Push",
+        "category": "Lantern",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "lantern.typescript.setup",
+        "title": "Set Up TypeScript Web Resources",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.plugins.newProject",
+        "title": "New Plug-in Project…",
+        "category": "Lantern",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "lantern.plugins.newClass",
+        "title": "New Plug-in Class…",
+        "category": "Lantern",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "lantern.plugins.getSource",
+        "title": "Get Plug-in Source from Dataverse…",
+        "category": "Lantern",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lantern.plugins.compareDeployed",
+        "title": "Compare Deployed Plug-in with Local",
+        "category": "Lantern",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "lantern.plugins.openProject",
+        "title": "Open Project File",
+        "category": "Lantern",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lantern.solutions.packAndImport",
+        "title": "Pack and Import from Your Files…",
+        "category": "Lantern",
+        "icon": "$(package)"
+      },
+      {
+        "command": "lantern.tests.setup",
+        "title": "Set Up Script Unit Tests",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.pcf.new",
+        "title": "New PCF Control…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.pcf.build",
+        "title": "Build PCF Control",
+        "category": "Lantern",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "lantern.pcf.push",
+        "title": "Push PCF Control",
+        "category": "Lantern",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lantern.pcf.harness",
+        "title": "Start PCF Test Harness",
+        "category": "Lantern",
+        "icon": "$(play)"
+      },
+      {
+        "command": "lantern.pages.download",
+        "title": "Download Power Pages Site…",
+        "category": "Lantern",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lantern.pages.upload",
+        "title": "Upload Power Pages Site…",
+        "category": "Lantern",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lantern.fetchxml.runInCode",
+        "title": "Run FetchXML from Code",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.fetchxml.editInCode",
+        "title": "Edit FetchXML from Code as Query",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.fetchxml.writeBack",
+        "title": "Write FetchXML Back to Code",
+        "category": "Lantern",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "lantern.customApi.new",
+        "title": "New Custom API…",
+        "category": "Lantern",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lantern.customApi.deploy",
+        "title": "Deploy Custom API",
+        "category": "Lantern",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lantern.customApi.generateCSharp",
+        "title": "Generate Custom API C# Handler",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.customApi.generateTypeScript",
+        "title": "Generate Custom API TypeScript Client",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.forms.registerHandler",
+        "title": "Register Function as Form Event Handler…",
+        "category": "Lantern",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "lantern.focusSteps",
+        "title": "Show Plug-in Steps",
+        "category": "Lantern"
+      },
+      {
+        "command": "lantern.removeClient",
+        "title": "Remove Lantern from Folder…",
+        "category": "Lantern",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "lantern.configureClient",
+          "when": "false"
+        },
+        {
+          "command": "lantern.review.open",
+          "when": "false"
+        },
+        {
+          "command": "lantern.review.takeDataverse",
+          "when": "false"
+        },
+        {
+          "command": "lantern.review.keepMine",
+          "when": "false"
+        },
+        {
+          "command": "lantern.review.takeAllPending",
+          "when": "lantern.reviewActive"
+        },
+        {
+          "command": "lantern.review.keepAllPending",
+          "when": "lantern.reviewActive"
+        },
+        {
+          "command": "lantern.review.apply",
+          "when": "lantern.reviewActive"
+        },
+        {
+          "command": "lantern.review.cancel",
+          "when": "lantern.reviewActive"
+        },
+        {
+          "command": "lantern.pushWebResource",
+          "when": "lantern.activeIsWebResource"
+        },
+        {
+          "command": "lantern.compareWebResource",
+          "when": "lantern.activeIsWebResource"
+        },
+        {
+          "command": "lantern.newFormScript",
+          "when": "lantern.activeInClient"
+        },
+        {
+          "command": "lantern.metadata.copyName",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.insertGetAttribute",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.insertGetControl",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.setFileTable",
+          "when": "lantern.activeInClient"
+        },
+        {
+          "command": "lantern.query.run",
+          "when": "lantern.activeIsQuery"
+        },
+        {
+          "command": "lantern.query.showFetchXml",
+          "when": "editorLangId == sql"
+        },
+        {
+          "command": "lantern.traces.open",
+          "when": "false"
+        },
+        {
+          "command": "lantern.traces.enableLogging",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.selectTop",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.scriptSelect",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.countRows",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.openTableInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.newRecordInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.addEarlyBound",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.valueCounts",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.selectWithColumn",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.insertSetValue",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.insertUiGet",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.logicalName",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.schemaName",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.displayName",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.entitySetName",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.webApiUrl",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.name",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.label",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.value",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.copy.id",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.copyCell",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.copyRow",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.copyColumn",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.openRecord",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.goToHandler",
+          "when": "false"
+        },
+        {
+          "command": "lantern.refreshNode",
+          "when": "false"
+        },
+        {
+          "command": "lantern.copyText",
+          "when": "false"
+        },
+        {
+          "command": "lantern.steps.enable",
+          "when": "false"
+        },
+        {
+          "command": "lantern.steps.disable",
+          "when": "false"
+        },
+        {
+          "command": "lantern.steps.openCode",
+          "when": "false"
+        },
+        {
+          "command": "lantern.jobs.filter",
+          "when": "false"
+        },
+        {
+          "command": "lantern.jobs.open",
+          "when": "false"
+        },
+        {
+          "command": "lantern.jobs.openRegarding",
+          "when": "false"
+        },
+        {
+          "command": "lantern.envvars.edit",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.inspectRecord",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.auditRecord",
+          "when": "false"
+        },
+        {
+          "command": "lantern.results.auditColumn",
+          "when": "false"
+        },
+        {
+          "command": "lantern.query.runAs",
+          "when": "lantern.activeIsQuery"
+        },
+        {
+          "command": "lantern.query.copyAs",
+          "when": "lantern.activeIsQuery"
+        },
+        {
+          "command": "lantern.results.copyAs",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.recentlyCreated",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.recentlyModified",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.inactive",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.byStatus",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.byOwner",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.missingRequired",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.findDuplicates",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.duplicateValues",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.missingValue",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.query.extraSpaces",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.addLocal",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.remove",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.reveal",
+          "when": "false"
+        },
+        {
+          "command": "lantern.webResources.open",
+          "when": "false"
+        },
+        {
+          "command": "lantern.dependencies.show",
+          "when": "lantern.activeIsWebResource"
+        },
+        {
+          "command": "lantern.code.analyzeFunction",
+          "when": "editorLangId == javascript && lantern.activeInClient"
+        },
+        {
+          "command": "lantern.code.outline",
+          "when": "editorLangId == javascript && lantern.activeInClient"
+        },
+        {
+          "command": "lantern.steps.analyze",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.export",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.copyTo",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.bumpVersion",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.check",
+          "when": "false"
+        },
+        {
+          "command": "lantern.solutions.document",
+          "when": "false"
+        },
+        {
+          "command": "lantern.traces.openClass",
+          "when": "false"
+        },
+        {
+          "command": "lantern.queries.save",
+          "when": "lantern.activeIsQuery"
+        },
+        {
+          "command": "lantern.queries.openRecent",
+          "when": "false"
+        },
+        {
+          "command": "lantern.metadata.importCsv",
+          "when": "false"
+        },
+        {
+          "command": "lantern.typescript.compileAndPush",
+          "when": "resourceExtname == .ts"
+        },
+        {
+          "command": "lantern.solutions.packAndImport",
+          "when": "false"
+        },
+        {
+          "command": "lantern.pcf.build",
+          "when": "false"
+        },
+        {
+          "command": "lantern.pcf.push",
+          "when": "false"
+        },
+        {
+          "command": "lantern.pcf.harness",
+          "when": "false"
+        },
+        {
+          "command": "lantern.fetchxml.runInCode",
+          "when": "false"
+        },
+        {
+          "command": "lantern.fetchxml.editInCode",
+          "when": "false"
+        },
+        {
+          "command": "lantern.fetchxml.writeBack",
+          "when": "false"
+        },
+        {
+          "command": "lantern.customApi.deploy",
+          "when": "false"
+        },
+        {
+          "command": "lantern.customApi.generateCSharp",
+          "when": "false"
+        },
+        {
+          "command": "lantern.customApi.generateTypeScript",
+          "when": "false"
+        },
+        {
+          "command": "lantern.forms.registerHandler",
+          "when": "lantern.activeIsWebResource && editorLangId == javascript"
+        },
+        {
+          "command": "lantern.focusSteps",
+          "when": "false"
+        },
+        {
+          "command": "lantern.plugins.openProject",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "lantern.newClient",
+          "when": "view == lantern.clients",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lantern.refresh",
+          "when": "view == lantern.clients",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lantern.initWorkspace",
+          "when": "view == lantern.clients",
+          "group": "more"
+        },
+        {
+          "command": "lantern.review.takeAllPending",
+          "when": "view == lantern.review",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lantern.review.keepAllPending",
+          "when": "view == lantern.review",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lantern.review.apply",
+          "when": "view == lantern.review",
+          "group": "navigation@3"
+        },
+        {
+          "command": "lantern.review.cancel",
+          "when": "view == lantern.review",
+          "group": "navigation@4"
+        },
+        {
+          "command": "lantern.query.new",
+          "when": "view == lantern.clients",
+          "group": "navigation@0"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "lantern.pull",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.openClientConfig",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "inline@3"
+        },
+        {
+          "command": "lantern.pull",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@1"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@2"
+        },
+        {
+          "command": "lantern.generateJsTypes",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "2_types@1"
+        },
+        {
+          "command": "lantern.generateEarlyBound",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "2_types@2"
+        },
+        {
+          "command": "lantern.testConnection",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "3_org@1"
+        },
+        {
+          "command": "lantern.openInBrowser",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "3_org@2"
+        },
+        {
+          "command": "lantern.openClientConfig",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "4_config@1"
+        },
+        {
+          "command": "lantern.configureClient",
+          "when": "view == lantern.clients && viewItem == unconfigured",
+          "group": "inline"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "view == lantern.clients && viewItem == plugin",
+          "group": "inline"
+        },
+        {
+          "command": "lantern.review.open",
+          "when": "view == lantern.review && viewItem == change",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.review.takeDataverse",
+          "when": "view == lantern.review",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.review.keepMine",
+          "when": "view == lantern.review",
+          "group": "inline@3"
+        },
+        {
+          "command": "lantern.metadata.openTable",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.metadata.copyName",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(column(\\.(text|memo))?|control|tab|section|option)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.metadata.insertGetAttribute",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column/",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.query.new",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "0_query@1"
+        },
+        {
+          "command": "lantern.editUserSettings",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "3_org@3"
+        },
+        {
+          "command": "lantern.metadata.findUsages",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column/",
+          "group": "inline@3"
+        },
+        {
+          "command": "lantern.metadata.selectTop",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "0_query@1"
+        },
+        {
+          "submenu": "lantern.metadata.copy",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|column(\\.(text|memo))?|option|tab|section|control|form)$/",
+          "group": "1_copy@1"
+        },
+        {
+          "command": "lantern.metadata.openTable",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_open@1"
+        },
+        {
+          "command": "lantern.metadata.openTableInBrowser",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_open@2"
+        },
+        {
+          "command": "lantern.metadata.newRecordInBrowser",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_open@3"
+        },
+        {
+          "command": "lantern.metadata.addEarlyBound",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "3_code@1"
+        },
+        {
+          "command": "lantern.metadata.refresh",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|client)$/",
+          "group": "9_refresh@1"
+        },
+        {
+          "command": "lantern.metadata.insertGetAttribute",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(column(\\.(text|memo))?|control)$/",
+          "group": "2_insert@1"
+        },
+        {
+          "command": "lantern.metadata.insertGetControl",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(column(\\.(text|memo))?|control)$/",
+          "group": "2_insert@2"
+        },
+        {
+          "command": "lantern.metadata.insertSetValue",
+          "when": "view == lantern.clients && viewItem == meta.option",
+          "group": "2_insert@3"
+        },
+        {
+          "command": "lantern.metadata.insertUiGet",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(tab|section)$/",
+          "group": "2_insert@4"
+        },
+        {
+          "command": "lantern.metadata.findUsages",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column/",
+          "group": "3_find@1"
+        },
+        {
+          "command": "lantern.metadata.selectTop",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.metadata.goToHandler",
+          "when": "view == lantern.clients && viewItem == meta.handler",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.metadata.goToHandler",
+          "when": "view == lantern.clients && viewItem == meta.handler",
+          "group": "0_go@1"
+        },
+        {
+          "command": "lantern.metadata.findTable",
+          "when": "view == lantern.clients && viewItem == section.tables",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.metadata.refresh",
+          "when": "view == lantern.clients && viewItem == section.tables",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.traces.filter",
+          "when": "view == lantern.clients && viewItem == section.traces",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.refreshNode",
+          "when": "view == lantern.clients && viewItem == section.traces",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.jobs.filter",
+          "when": "view == lantern.clients && viewItem == section.jobs",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.refreshNode",
+          "when": "view == lantern.clients && viewItem =~ /^section\\.(jobs|steps|envvars|environment)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.publishAll",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.publishAll",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@3"
+        },
+        {
+          "command": "lantern.record.inspect",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_records@1"
+        },
+        {
+          "command": "lantern.record.audit",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_records@2"
+        },
+        {
+          "command": "lantern.steps.disable",
+          "when": "view == lantern.clients && viewItem == step.enabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.steps.enable",
+          "when": "view == lantern.clients && viewItem == step.disabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.steps.disable",
+          "when": "view == lantern.clients && viewItem == step.enabled",
+          "group": "0_state@1"
+        },
+        {
+          "command": "lantern.steps.enable",
+          "when": "view == lantern.clients && viewItem == step.disabled",
+          "group": "0_state@1"
+        },
+        {
+          "command": "lantern.steps.openCode",
+          "when": "view == lantern.clients && viewItem =~ /^step\\./",
+          "group": "1_open@1"
+        },
+        {
+          "command": "lantern.jobs.open",
+          "when": "view == lantern.clients && viewItem =~ /^job/",
+          "group": "0_open@1"
+        },
+        {
+          "command": "lantern.jobs.openRegarding",
+          "when": "view == lantern.clients && viewItem == job.regarding",
+          "group": "0_open@2"
+        },
+        {
+          "command": "lantern.envvars.edit",
+          "when": "view == lantern.clients && viewItem == envvar.editable",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.envvars.edit",
+          "when": "view == lantern.clients && viewItem == envvar.editable",
+          "group": "0_edit@1"
+        },
+        {
+          "submenu": "lantern.metadata.queries",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|column(\\.(text|memo))?)$/",
+          "group": "0_query@2"
+        },
+        {
+          "command": "lantern.signInAs",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "3_org@0"
+        },
+        {
+          "command": "lantern.solutions.add",
+          "when": "view == lantern.clients && viewItem == group.solutions.connected",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.solutions.add",
+          "when": "view == lantern.clients && viewItem == group.solutions.connected",
+          "group": "0_edit@1"
+        },
+        {
+          "command": "lantern.solutions.add",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@4"
+        },
+        {
+          "command": "lantern.solutions.reveal",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\..*\\.pulled$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.refreshNode",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.solutions.addLocal",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.local/",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.solutions.reveal",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\..*\\.pulled$/",
+          "group": "0_open@1"
+        },
+        {
+          "command": "lantern.solutions.addLocal",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.local/",
+          "group": "1_edit@1"
+        },
+        {
+          "command": "lantern.solutions.remove",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "1_edit@2"
+        },
+        {
+          "command": "lantern.webResources.open",
+          "when": "view == lantern.clients && viewItem == webResource",
+          "group": "0_open@1"
+        },
+        {
+          "command": "lantern.dependencies.show",
+          "when": "view == lantern.clients && viewItem =~ /^(meta\\.(table|column(\\.(text|memo))?|form)|step\\..*|envvar.*|webResource)$/",
+          "group": "4_deps@1"
+        },
+        {
+          "command": "lantern.code.analyzeFunction",
+          "when": "view == lantern.clients && viewItem == meta.handler",
+          "group": "0_go@2"
+        },
+        {
+          "command": "lantern.code.outline",
+          "when": "view == lantern.clients && viewItem == webResource",
+          "group": "0_open@2"
+        },
+        {
+          "command": "lantern.steps.analyze",
+          "when": "view == lantern.clients && viewItem =~ /^step\\./",
+          "group": "1_open@2"
+        },
+        {
+          "command": "lantern.environments.switch",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "inline@0"
+        },
+        {
+          "command": "lantern.environments.switch",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "0_env@1"
+        },
+        {
+          "command": "lantern.environments.add",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "0_env@2"
+        },
+        {
+          "command": "lantern.environments.compare",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "0_env@3"
+        },
+        {
+          "command": "lantern.solutions.import",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@5"
+        },
+        {
+          "command": "lantern.security.role",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "4_security@1"
+        },
+        {
+          "command": "lantern.security.whyAccess",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "4_security@2"
+        },
+        {
+          "command": "lantern.typescript.setup",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "2_types@9"
+        },
+        {
+          "command": "lantern.solutions.export",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@1"
+        },
+        {
+          "command": "lantern.solutions.copyTo",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@2"
+        },
+        {
+          "command": "lantern.solutions.bumpVersion",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@3"
+        },
+        {
+          "command": "lantern.solutions.check",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@4"
+        },
+        {
+          "command": "lantern.solutions.document",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@5"
+        },
+        {
+          "command": "lantern.environments.compare",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "group": "2_alm@6"
+        },
+        {
+          "command": "lantern.steps.register",
+          "when": "view == lantern.clients && viewItem == section.steps",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.steps.register",
+          "when": "view == lantern.clients && viewItem =~ /^(section\\.steps|stepAssembly|pluginClass\\.registered\\.plugin)$/",
+          "group": "0_new@1"
+        },
+        {
+          "command": "lantern.traces.openClass",
+          "when": "view == lantern.clients && viewItem == trace",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.traces.openClass",
+          "when": "view == lantern.clients && viewItem == trace",
+          "group": "0_open@2"
+        },
+        {
+          "command": "lantern.query.new",
+          "when": "view == lantern.clients && viewItem == group.queries",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.refreshNode",
+          "when": "view == lantern.clients && viewItem == group.queries",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.queries.openRecent",
+          "when": "view == lantern.clients && viewItem == recentQuery",
+          "group": "0_open@1"
+        },
+        {
+          "command": "lantern.metadata.importCsv",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "5_data@1"
+        },
+        {
+          "command": "lantern.plugins.newClass",
+          "when": "view == lantern.clients && viewItem == plugin",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.plugins.newClass",
+          "when": "view == lantern.clients && viewItem =~ /^(plugin|group\\.plugins|group\\.pluginProjects)$/",
+          "group": "0_new@1"
+        },
+        {
+          "command": "lantern.plugins.newProject",
+          "when": "view == lantern.clients && viewItem =~ /^(client.*|group\\.plugins|group\\.pluginProjects)$/",
+          "group": "2_new@1"
+        },
+        {
+          "command": "lantern.pcf.new",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "2_new@2"
+        },
+        {
+          "command": "lantern.customApi.new",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "2_new@3"
+        },
+        {
+          "command": "lantern.tests.setup",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "2_types@10"
+        },
+        {
+          "command": "lantern.pages.download",
+          "when": "view == lantern.clients && viewItem == client.connected",
+          "group": "1_sync@6"
+        },
+        {
+          "command": "lantern.pcf.new",
+          "when": "view == lantern.clients && viewItem == group.pcf",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.pcf.build",
+          "when": "view == lantern.clients && viewItem == pcfControl",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.pcf.push",
+          "when": "view == lantern.clients && viewItem == pcfControl",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.pcf.build",
+          "when": "view == lantern.clients && viewItem == pcfControl",
+          "group": "0_build@1"
+        },
+        {
+          "command": "lantern.pcf.push",
+          "when": "view == lantern.clients && viewItem == pcfControl",
+          "group": "0_build@2"
+        },
+        {
+          "command": "lantern.pcf.harness",
+          "when": "view == lantern.clients && viewItem == pcfControl",
+          "group": "0_build@3"
+        },
+        {
+          "command": "lantern.pages.download",
+          "when": "view == lantern.clients && viewItem == group.pages",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.pages.upload",
+          "when": "view == lantern.clients && viewItem == pagesSite",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.pages.upload",
+          "when": "view == lantern.clients && viewItem == pagesSite",
+          "group": "0_sync@1"
+        },
+        {
+          "command": "lantern.solutions.packAndImport",
+          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured\\.pulled$/",
+          "group": "2_alm@0"
+        },
+        {
+          "command": "lantern.removeClient",
+          "when": "view == lantern.clients && viewItem =~ /^client/",
+          "group": "9_remove@1"
+        },
+        {
+          "command": "lantern.plugins.getSource",
+          "when": "view == lantern.clients && viewItem =~ /^(group\\.pluginProjects|remoteAssembly)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "lantern.plugins.getSource",
+          "when": "view == lantern.clients && viewItem =~ /^(group\\.plugins|group\\.pluginProjects|remoteAssembly|stepAssembly|client\\.connected)$/",
+          "group": "0_new@2"
+        },
+        {
+          "command": "lantern.plugins.compareDeployed",
+          "when": "view == lantern.clients && viewItem =~ /^(plugin|pluginClass\\.registered\\..*)$/",
+          "group": "1_plugin@2"
+        },
+        {
+          "command": "lantern.plugins.openProject",
+          "when": "view == lantern.clients && viewItem == plugin",
+          "group": "1_plugin@3"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "view == lantern.clients && viewItem =~ /^pluginClass\\.(unregistered|orphan)\\./",
+          "group": "inline"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "view == lantern.clients && viewItem =~ /^pluginClass\\./",
+          "group": "1_plugin@1"
+        },
+        {
+          "command": "lantern.steps.register",
+          "when": "view == lantern.clients && viewItem == pluginClass.registered.plugin",
+          "group": "inline"
+        },
+        {
+          "command": "lantern.plugins.newProject",
+          "when": "view == lantern.clients && viewItem == group.pluginProjects",
+          "group": "inline@1"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "view == lantern.clients && viewItem =~ /^group\\.(plugins|pluginProjects)$/",
+          "group": "1_plugin@1"
+        },
+        {
+          "command": "lantern.steps.register",
+          "when": "view == lantern.clients && viewItem == group.plugins",
+          "group": "0_new@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "lantern.pushWebResource",
+          "when": "resourceExtname =~ /^\\.(js|html?|css|xml|svg|resx|png|jpe?g|gif|ico|xslt?)$/ || resourcePath =~ /WebResources/ && !(resourceFilename =~ /\\.data\\.xml$/)",
+          "group": "7_dataverse@1"
+        },
+        {
+          "command": "lantern.compareWebResource",
+          "when": "resourceExtname =~ /^\\.(js|html?|css|xml|svg|resx|xslt?)$/ || resourcePath =~ /WebResources/ && !(resourceFilename =~ /\\.data\\.xml$/)",
+          "group": "7_dataverse@2"
+        },
+        {
+          "command": "lantern.newFormScript",
+          "when": "explorerResourceIsFolder",
+          "group": "7_dataverse@3"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "resourceExtname == .csproj",
+          "group": "7_dataverse@4"
+        },
+        {
+          "command": "lantern.code.outline",
+          "when": "resourceExtname == .js || resourcePath =~ /WebResources/ && !(resourceFilename =~ /\\.data\\.xml$/)",
+          "group": "7_dataverse@5"
+        },
+        {
+          "command": "lantern.dependencies.show",
+          "when": "resourceExtname =~ /^\\.(js|html?|css|xml|svg|resx|png|jpe?g|gif|ico|xslt?)$/ || resourcePath =~ /WebResources/ && !(resourceFilename =~ /\\.data\\.xml$/)",
+          "group": "7_dataverse@6"
+        },
+        {
+          "command": "lantern.typescript.compileAndPush",
+          "when": "resourceExtname == .ts",
+          "group": "7_dataverse@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "lantern.pushWebResource",
+          "when": "lantern.activeIsWebResource",
+          "group": "navigation@90"
+        },
+        {
+          "command": "lantern.compareWebResource",
+          "when": "lantern.activeIsWebResource",
+          "group": "navigation@91"
+        },
+        {
+          "command": "lantern.query.run",
+          "when": "lantern.activeIsQuery",
+          "group": "navigation@89"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "lantern.pushWebResource",
+          "when": "lantern.activeIsWebResource",
+          "group": "7_dataverse@1"
+        },
+        {
+          "command": "lantern.compareWebResource",
+          "when": "lantern.activeIsWebResource",
+          "group": "7_dataverse@2"
+        },
+        {
+          "command": "lantern.pushPlugin",
+          "when": "lantern.activeIsPluginSource",
+          "group": "7_dataverse@3"
+        },
+        {
+          "command": "lantern.metadata.setFileTable",
+          "when": "lantern.activeInClient && editorLangId =~ /^(javascript|typescript)$/",
+          "group": "7_dataverse@4"
+        },
+        {
+          "command": "lantern.query.runAs",
+          "when": "lantern.activeIsQuery",
+          "group": "7_dataverse@5"
+        },
+        {
+          "command": "lantern.query.copyAs",
+          "when": "lantern.activeIsQuery",
+          "group": "7_dataverse@6"
+        },
+        {
+          "command": "lantern.code.analyzeFunction",
+          "when": "editorLangId == javascript && lantern.activeInClient",
+          "group": "7_dataverse@7"
+        },
+        {
+          "command": "lantern.code.outline",
+          "when": "editorLangId == javascript && lantern.activeInClient",
+          "group": "7_dataverse@8"
+        },
+        {
+          "command": "lantern.dependencies.show",
+          "when": "lantern.activeIsWebResource",
+          "group": "7_dataverse@9"
+        },
+        {
+          "command": "lantern.queries.save",
+          "when": "lantern.activeIsQuery",
+          "group": "7_dataverse@10"
+        },
+        {
+          "command": "lantern.typescript.compileAndPush",
+          "when": "resourceExtname == .ts && lantern.activeInClient",
+          "group": "7_dataverse@1"
+        },
+        {
+          "command": "lantern.forms.registerHandler",
+          "when": "lantern.activeIsWebResource && editorLangId == javascript",
+          "group": "7_dataverse@11"
+        },
+        {
+          "command": "lantern.fetchxml.writeBack",
+          "when": "lantern.activeIsQuery && editorLangId == xml",
+          "group": "7_dataverse@12"
+        },
+        {
+          "command": "lantern.plugins.compareDeployed",
+          "when": "lantern.activeIsPluginSource",
+          "group": "7_dataverse@4"
+        }
+      ],
+      "lantern.metadata.copy": [
+        {
+          "command": "lantern.metadata.copy.logicalName",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|column(\\.(text|memo))?)$/",
+          "group": "1@1"
+        },
+        {
+          "command": "lantern.metadata.copy.schemaName",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|column(\\.(text|memo))?)$/",
+          "group": "1@2"
+        },
+        {
+          "command": "lantern.metadata.copy.displayName",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|column(\\.(text|memo))?)$/",
+          "group": "1@3"
+        },
+        {
+          "command": "lantern.metadata.copy.name",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(tab|section|control|form)$/",
+          "group": "1@4"
+        },
+        {
+          "command": "lantern.metadata.copy.label",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(option|tab|section|control)$/",
+          "group": "1@5"
+        },
+        {
+          "command": "lantern.metadata.copy.value",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(option)$/",
+          "group": "1@6"
+        },
+        {
+          "command": "lantern.metadata.copy.entitySetName",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table)$/",
+          "group": "2@1"
+        },
+        {
+          "command": "lantern.metadata.copy.webApiUrl",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table)$/",
+          "group": "2@2"
+        },
+        {
+          "command": "lantern.metadata.copy.id",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.(table|form)$/",
+          "group": "2@3"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "lantern.results.copyCell",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell'",
+          "group": "1_copy@1"
+        },
+        {
+          "command": "lantern.results.copyRow",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell'",
+          "group": "1_copy@2"
+        },
+        {
+          "command": "lantern.results.copyColumn",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell'",
+          "group": "1_copy@3"
+        },
+        {
+          "command": "lantern.results.openRecord",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell'",
+          "group": "2_open@1"
+        },
+        {
+          "command": "lantern.results.inspectRecord",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell' && hasRecord",
+          "group": "2_open@2"
+        },
+        {
+          "command": "lantern.results.auditRecord",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell' && hasRecord && setKind != 'audit'",
+          "group": "3_audit@1"
+        },
+        {
+          "command": "lantern.results.auditColumn",
+          "when": "webviewId == 'lantern.results' && webviewSection == 'cell' && setKind == 'record'",
+          "group": "3_audit@2"
+        }
+      ],
+      "lantern.metadata.queries": [
+        {
+          "command": "lantern.metadata.selectTop",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "1_rows@1"
+        },
+        {
+          "command": "lantern.metadata.scriptSelect",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "1_rows@2"
+        },
+        {
+          "command": "lantern.metadata.query.recentlyCreated",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_recent@1"
+        },
+        {
+          "command": "lantern.metadata.query.recentlyModified",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_recent@2"
+        },
+        {
+          "command": "lantern.metadata.query.inactive",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "2_recent@3"
+        },
+        {
+          "command": "lantern.metadata.countRows",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "3_counts@1"
+        },
+        {
+          "command": "lantern.metadata.query.byStatus",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "3_counts@2"
+        },
+        {
+          "command": "lantern.metadata.query.byOwner",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "3_counts@3"
+        },
+        {
+          "command": "lantern.metadata.query.findDuplicates",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "4_quality@1"
+        },
+        {
+          "command": "lantern.metadata.query.missingRequired",
+          "when": "view == lantern.clients && viewItem == meta.table",
+          "group": "4_quality@2"
+        },
+        {
+          "command": "lantern.metadata.selectWithColumn",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column/",
+          "group": "1_rows@1"
+        },
+        {
+          "command": "lantern.metadata.query.missingValue",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column/",
+          "group": "1_rows@2"
+        },
+        {
+          "command": "lantern.metadata.valueCounts",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column(\\.text)?$/",
+          "group": "3_counts@1"
+        },
+        {
+          "command": "lantern.metadata.query.duplicateValues",
+          "when": "view == lantern.clients && viewItem =~ /^meta\\.column(\\.text)?$/",
+          "group": "4_quality@1"
+        },
+        {
+          "command": "lantern.metadata.query.extraSpaces",
+          "when": "view == lantern.clients && viewItem == meta.column.text",
+          "group": "4_quality@2"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "lantern.pushWebResource",
+        "key": "ctrl+alt+u",
+        "mac": "cmd+alt+u",
+        "when": "editorTextFocus && lantern.activeIsWebResource"
+      },
+      {
+        "command": "lantern.compareWebResource",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "editorTextFocus && lantern.activeIsWebResource"
+      },
+      {
+        "command": "lantern.pushPlugin",
+        "key": "ctrl+alt+u",
+        "mac": "cmd+alt+u",
+        "when": "editorTextFocus && lantern.activeIsPluginSource"
+      },
+      {
+        "command": "lantern.plugins.compareDeployed",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "editorTextFocus && lantern.activeIsPluginSource"
+      },
+      {
+        "command": "lantern.query.run",
+        "key": "f5",
+        "when": "editorTextFocus && lantern.activeIsQuery && !inDebugMode"
+      }
+    ],
+    "configuration": {
+      "title": "Lantern",
+      "properties": {
+        "lantern.clientsFolder": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Folder that holds your client folders. Empty means the first workspace folder. Relative paths resolve against it."
+        },
+        "lantern.autoConfigureNewFolders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add client.json and jsconfig.json to new subfolders of the clients folder automatically."
+        },
+        "lantern.authMethod": {
+          "type": "string",
+          "enum": [
+            "vscode",
+            "azureCli"
+          ],
+          "enumDescriptions": [
+            "VS Code's built-in Microsoft account sign-in.",
+            "Azure CLI (az account get-access-token). Use this if a client's tenant blocks the first option."
+          ],
+          "default": "vscode",
+          "description": "How to sign in to the Dataverse Web API for web resource push and compare. Pull, plug-ins, and early-bound generation use pac's own sign-in."
+        },
+        "lantern.publishAfterPush": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish web resources right after pushing them."
+        },
+        "lantern.pushOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Push web resources to Dataverse every time you save them. Only files whose web resource name is known for certain are pushed."
+        },
+        "lantern.plugins.buildConfiguration": {
+          "type": "string",
+          "default": "Release",
+          "description": "Build configuration used before pushing plug-ins."
+        },
+        "lantern.pacPath": {
+          "type": "string",
+          "default": "pac",
+          "description": "Path to the Power Platform CLI."
+        },
+        "lantern.dotnetPath": {
+          "type": "string",
+          "default": "dotnet",
+          "description": "Path to the .NET CLI."
+        },
+        "lantern.ilspyPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ILSpy's command-line decompiler (ilspycmd), used by Get Plug-in Source and Compare Deployed. Empty means ilspycmd on your PATH or in the .NET global tools folder; Lantern offers to install it."
+        },
+        "lantern.azPath": {
+          "type": "string",
+          "default": "az",
+          "description": "Path to the Azure CLI (only for authMethod azureCli)."
+        },
+        "lantern.xrmDefinitelyTypedPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to XrmDefinitelyTyped.exe. Empty means search tools/xdt in the workspace."
+        },
+        "lantern.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Push/Compare links on web resources and Build and Push on plug-in classes."
+        },
+        "lantern.metadata.completions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suggest and describe column, control, tab, and section names inside getAttribute(\"…\"), getControl(\"…\"), tabs.get(\"…\") and sections.get(\"…\")."
+        },
+        "lantern.query.maxRows": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1,
+          "description": "Most rows a query returns before stopping (Dataverse sends 5,000 per page). Queries with TOP or aggregates aren't affected."
+        },
+        "lantern.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show problems in form scripts as you type: columns that don't exist or aren't on any form, unknown controls, tabs, and sections, and form handlers the file doesn't define."
+        },
+        "lantern.typescript.pushOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a TypeScript web resource is saved, compile it and push the .js output to Dataverse."
+        },
+        "lantern.clientSettingsLocation": {
+          "type": "string",
+          "enum": [
+            "outside",
+            "folder"
+          ],
+          "default": "outside",
+          "enumDescriptions": [
+            "Keep each client's settings in Lantern's own storage on this machine, so nothing of Lantern's is in the client's folder or repo.",
+            "Keep them in client.json inside the client folder (kept out of git through the repo's local exclude list)."
+          ],
+          "description": "Where client settings (org, environments, solutions, accounts...) are kept. Reload the window after changing it."
+        },
+        "lantern.createJsconfig": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a jsconfig.json in each client folder for typed Xrm IntelliSense in form scripts. Lantern keeps it out of git through the repo's local exclude list, so no .gitignore changes are needed."
+        }
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "**/client.json",
+          "**/*.lantern-client.json"
+        ],
+        "url": "./schemas/client.schema.json"
+      },
+      {
+        "fileMatch": "**/customapis/*.json",
+        "url": "./schemas/customapi.schema.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "javascript",
+        "path": "./snippets/xrm.json"
+      },
+      {
+        "language": "csharp",
+        "path": "./snippets/dataverse-csharp.json"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "lantern.metadata.copy",
+        "label": "Copy"
+      },
+      {
+        "id": "lantern.metadata.queries",
+        "label": "Query"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "lantern_clients",
+        "displayName": "Lantern: clients",
+        "toolReferenceName": "lanternClients",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(organization)",
+        "modelDescription": "Lists the Dynamics 365 / Dataverse client folders in this workspace with each one's org URL, environments (DEV/TEST/PROD, which are protected, which is active), and solutions. Call this first to learn client names for the other Lantern tools.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "lantern_describe_table",
+        "displayName": "Lantern: describe a table",
+        "toolReferenceName": "lanternTable",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(table)",
+        "modelDescription": "Describes a Dataverse table from a client's org: every column with its logical name, display name, type, required level, choice values, and lookup targets, plus each form and its event handlers. Use it before writing form scripts, plug-ins, or queries against the table.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string",
+              "description": "Client folder name; optional when there's only one."
+            },
+            "table": {
+              "type": "string",
+              "description": "Table logical name (like account) or display name."
+            }
+          },
+          "required": [
+            "table"
+          ]
+        }
+      },
+      {
+        "name": "lantern_query",
+        "displayName": "Lantern: run a read-only query",
+        "toolReferenceName": "lanternQuery",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "modelDescription": "Runs a read-only query against a client's Dataverse org and returns up to 50 rows as a table. Accepts a SQL SELECT (Lantern's dialect: SELECT [TOP n] columns FROM table [alias] [JOIN ... ON a.x = b.y] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY ...], using logical names) or a FetchXML document. UPDATE, DELETE, and INSERT are refused. The person confirms each query before it runs.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string",
+              "description": "Client folder name; optional when there's only one."
+            },
+            "query": {
+              "type": "string",
+              "description": "A SQL SELECT statement or a FetchXML document."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "lantern_where_used",
+        "displayName": "Lantern: where a column is used",
+        "toolReferenceName": "lanternWhereUsed",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(references)",
+        "modelDescription": "Finds where a Dataverse column is used: on forms, in views, business rules and workflows, plug-in step filtering, and in the client folder's code (with the function each use is in). Use before renaming, removing, or changing a column.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "client": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string",
+              "description": "Table logical name."
+            },
+            "column": {
+              "type": "string",
+              "description": "Column logical name."
+            }
+          },
+          "required": [
+            "table",
+            "column"
+          ]
+        }
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "lantern.start",
+        "title": "Get started with Lantern",
+        "description": "Set up a client, sign in, and the everyday loop: pull, push, query.",
+        "steps": [
+          {
+            "id": "client",
+            "title": "Add a client",
+            "description": "Create a folder for a client, optionally from its Azure DevOps repo.\n[New Client](command:lantern.newClient)",
+            "media": {
+              "markdown": "media/walkthrough/clients.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.newClient"
+            ]
+          },
+          {
+            "id": "signin",
+            "title": "Sign in",
+            "description": "Pick the account (or app registration) the client uses.\n[Sign In As…](command:lantern.signInAs)",
+            "media": {
+              "markdown": "media/walkthrough/signin.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.signInAs"
+            ]
+          },
+          {
+            "id": "environments",
+            "title": "Add DEV, TEST, PROD",
+            "description": "Add the client's other orgs and protect PROD.\n[Add Environment…](command:lantern.environments.add)",
+            "media": {
+              "markdown": "media/walkthrough/environments.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.environments.add"
+            ]
+          },
+          {
+            "id": "pull",
+            "title": "Pull with review",
+            "description": "Bring Dataverse's version down and choose what to take.\n[Pull](command:lantern.pull)",
+            "media": {
+              "markdown": "media/walkthrough/pull.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.pull"
+            ]
+          },
+          {
+            "id": "push",
+            "title": "Push changes",
+            "description": "Push the open web resource with Ctrl+Alt+U.\n[Push Web Resource](command:lantern.pushWebResource)",
+            "media": {
+              "markdown": "media/walkthrough/push.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.pushWebResource",
+              "onCommand:lantern.pushPlugin"
+            ]
+          },
+          {
+            "id": "query",
+            "title": "Query Dataverse",
+            "description": "Write SQL against the org and see results in the panel.\n[New Query](command:lantern.query.new)",
+            "media": {
+              "markdown": "media/walkthrough/query.md"
+            },
+            "completionEvents": [
+              "onCommand:lantern.query.run"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node test/unit.js && node test/run.js && node test/webview.js",
+    "package": "vsce package --allow-missing-repository --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.6.0"
+  }
+}

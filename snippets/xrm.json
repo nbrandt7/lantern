@@ -1,0 +1,128 @@
+{
+  "Form context": {
+    "prefix": "xrm-formcontext",
+    "description": "Get the form context from the execution context",
+    "body": ["const formContext = executionContext.getFormContext();"]
+  },
+  "Form event handler": {
+    "prefix": "xrm-handler",
+    "description": "Event handler that receives the execution context",
+    "body": [
+      "/** @param {Xrm.Events.EventContext} executionContext */",
+      "function ${1:onChange}(executionContext) {",
+      "\tconst formContext = executionContext.getFormContext();",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Get attribute value": {
+    "prefix": "xrm-getvalue",
+    "body": ["const ${2:value} = formContext.getAttribute(\"${1:logicalname}\")?.getValue();"]
+  },
+  "Set attribute value": {
+    "prefix": "xrm-setvalue",
+    "body": ["formContext.getAttribute(\"${1:logicalname}\")?.setValue(${2:value});"]
+  },
+  "Lookup value": {
+    "prefix": "xrm-lookup",
+    "description": "Read the first value of a lookup",
+    "body": [
+      "const ${2:lookup} = formContext.getAttribute(\"${1:logicalname}\")?.getValue()?.[0];",
+      "if (${2:lookup}) {",
+      "\tconst id = ${2:lookup}.id.replace(/[{}]/g, \"\");",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Add on change": {
+    "prefix": "xrm-addonchange",
+    "body": ["formContext.getAttribute(\"${1:logicalname}\")?.addOnChange(${2:handler});"]
+  },
+  "Required level": {
+    "prefix": "xrm-required",
+    "body": ["formContext.getAttribute(\"${1:logicalname}\")?.setRequiredLevel(\"${2|required,recommended,none|}\");"]
+  },
+  "Show or hide control": {
+    "prefix": "xrm-visible",
+    "body": ["formContext.getControl(\"${1:logicalname}\")?.setVisible(${2|true,false|});"]
+  },
+  "Disable control": {
+    "prefix": "xrm-disabled",
+    "body": ["formContext.getControl(\"${1:logicalname}\")?.setDisabled(${2|true,false|});"]
+  },
+  "Tab and section visibility": {
+    "prefix": "xrm-section",
+    "body": ["formContext.ui.tabs.get(\"${1:tab_name}\")?.sections.get(\"${2:section_name}\")?.setVisible(${3|true,false|});"]
+  },
+  "Form notification": {
+    "prefix": "xrm-formnotification",
+    "body": [
+      "formContext.ui.setFormNotification(\"${1:message}\", \"${2|INFO,WARNING,ERROR|}\", \"${3:notification_id}\");",
+      "// formContext.ui.clearFormNotification(\"${3:notification_id}\");"
+    ]
+  },
+  "Field notification": {
+    "prefix": "xrm-fieldnotification",
+    "body": [
+      "formContext.getControl(\"${1:logicalname}\")?.setNotification(\"${2:message}\", \"${3:notification_id}\");",
+      "// formContext.getControl(\"${1:logicalname}\")?.clearNotification(\"${3:notification_id}\");"
+    ]
+  },
+  "Retrieve record": {
+    "prefix": "xrm-retrieve",
+    "body": [
+      "const ${3:record} = await Xrm.WebApi.retrieveRecord(\"${1:account}\", ${2:id}, \"?\\$select=${4:name}\");"
+    ]
+  },
+  "Retrieve multiple": {
+    "prefix": "xrm-retrievemultiple",
+    "body": [
+      "const result = await Xrm.WebApi.retrieveMultipleRecords(",
+      "\t\"${1:account}\",",
+      "\t\"?\\$select=${2:name}&\\$filter=${3:statecode eq 0}&\\$top=${4:50}\"",
+      ");",
+      "for (const row of result.entities) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Create record": {
+    "prefix": "xrm-create",
+    "body": ["const { id } = await Xrm.WebApi.createRecord(\"${1:account}\", { ${2:name}: ${3:\"value\"} });"]
+  },
+  "Update record": {
+    "prefix": "xrm-update",
+    "body": ["await Xrm.WebApi.updateRecord(\"${1:account}\", ${2:id}, { ${3:name}: ${4:\"value\"} });"]
+  },
+  "Confirm dialog": {
+    "prefix": "xrm-confirm",
+    "body": [
+      "const { confirmed } = await Xrm.Navigation.openConfirmDialog({ title: \"${1:Confirm}\", text: \"${2:Are you sure?}\" });",
+      "if (confirmed) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "Alert dialog": {
+    "prefix": "xrm-alert",
+    "body": ["await Xrm.Navigation.openAlertDialog({ text: \"${1:message}\" });"]
+  },
+  "Progress indicator": {
+    "prefix": "xrm-progress",
+    "body": [
+      "Xrm.Utility.showProgressIndicator(\"${1:Working...}\");",
+      "try {",
+      "\t$0",
+      "} finally {",
+      "\tXrm.Utility.closeProgressIndicator();",
+      "}"
+    ]
+  },
+  "Prevent save": {
+    "prefix": "xrm-preventsave",
+    "description": "Inside an OnSave handler",
+    "body": [
+      "/** @type {Xrm.Events.SaveEventContext} */ (executionContext).getEventArgs().preventDefault();"
+    ]
+  }
+}

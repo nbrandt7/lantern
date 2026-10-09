@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lantern Custom API definition",
+  "type": "object",
+  "required": [
+    "uniquename"
+  ],
+  "properties": {
+    "uniquename": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]+_\\w+$",
+      "description": "Unique name with the publisher prefix, like acme_CalculateDiscount."
+    },
+    "displayname": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "binding": {
+      "enum": [
+        "global",
+        "entity",
+        "entitycollection"
+      ],
+      "default": "global",
+      "description": "Global, bound to one row (entity), or bound to a table (entitycollection). Can't change after deploying."
+    },
+    "boundEntity": {
+      "type": "string",
+      "description": "Table logical name when bound."
+    },
+    "isFunction": {
+      "type": "boolean",
+      "default": false,
+      "description": "Function (GET, only reads) or action (POST). Can't change after deploying."
+    },
+    "isPrivate": {
+      "type": "boolean",
+      "default": false
+    },
+    "allowedStepType": {
+      "enum": [
+        "none",
+        "async",
+        "sync"
+      ],
+      "default": "sync",
+      "description": "Whether other plug-ins can register steps on it."
+    },
+    "plugin": {
+      "type": "string",
+      "description": "Full type name of the plug-in class that runs it."
+    },
+    "requestParameters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/field"
+      }
+    },
+    "responseProperties": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/field"
+      }
+    }
+  },
+  "definitions": {
+    "field": {
+      "type": "object",
+      "required": [
+        "uniquename",
+        "type"
+      ],
+      "properties": {
+        "uniquename": {
+          "type": "string",
+          "pattern": "^\\w+$"
+        },
+        "displayname": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "Boolean",
+            "DateTime",
+            "Decimal",
+            "Entity",
+            "EntityCollection",
+            "EntityReference",
+            "Float",
+            "Integer",
+            "Money",
+            "Picklist",
+            "String",
+            "StringArray",
+            "Guid"
+          ]
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "Request parameters only."
+        },
+        "entity": {
+          "type": "string",
+          "description": "Table for Entity and EntityReference types."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "Dataverse plug-in": {
+    "prefix": "dv-plugin",
+    "description": "Plug-in class with the standard services",
+    "body": [
+      "using System;",
+      "using Microsoft.Xrm.Sdk;",
+      "",
+      "namespace ${1:Contoso.Plugins}",
+      "{",
+      "    public class ${2:AccountPostUpdate} : IPlugin",
+      "    {",
+      "        public void Execute(IServiceProvider serviceProvider)",
+      "        {",
+      "            var context = (IPluginExecutionContext)serviceProvider.GetService(typeof(IPluginExecutionContext));",
+      "            var tracing = (ITracingService)serviceProvider.GetService(typeof(ITracingService));",
+      "            var factory = (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));",
+      "            var service = factory.CreateOrganizationService(context.UserId);",
+      "",
+      "            if (!(context.InputParameters.TryGetValue(\"Target\", out var targetObj) && targetObj is Entity target))",
+      "            {",
+      "                return;",
+      "            }",
+      "",
+      "            try",
+      "            {",
+      "                $0",
+      "            }",
+      "            catch (Exception ex) when (!(ex is InvalidPluginExecutionException))",
+      "            {",
+      "                tracing.Trace(\"${2:AccountPostUpdate}: {0}\", ex);",
+      "                throw new InvalidPluginExecutionException(\"An error occurred in ${2:AccountPostUpdate}.\", ex);",
+      "            }",
+      "        }",
+      "    }",
+      "}"
+    ]
+  },
+  "Pre-image": {
+    "prefix": "dv-preimage",
+    "body": [
+      "var ${2:preImage} = context.PreEntityImages.TryGetValue(\"${1:PreImage}\", out var ${2:preImage}Entity) ? ${2:preImage}Entity : null;"
+    ]
+  },
+  "Post-image": {
+    "prefix": "dv-postimage",
+    "body": [
+      "var ${2:postImage} = context.PostEntityImages.TryGetValue(\"${1:PostImage}\", out var ${2:postImage}Entity) ? ${2:postImage}Entity : null;"
+    ]
+  },
+  "Depth guard": {
+    "prefix": "dv-depth",
+    "description": "Stop recursive executions",
+    "body": ["if (context.Depth > ${1:1}) return;"]
+  },
+  "Query expression": {
+    "prefix": "dv-query",
+    "body": [
+      "var query = new Microsoft.Xrm.Sdk.Query.QueryExpression(\"${1:account}\")",
+      "{",
+      "    ColumnSet = new Microsoft.Xrm.Sdk.Query.ColumnSet(\"${2:name}\"),",
+      "    Criteria = { Conditions = { new Microsoft.Xrm.Sdk.Query.ConditionExpression(\"${3:statecode}\", Microsoft.Xrm.Sdk.Query.ConditionOperator.Equal, ${4:0}) } }",
+      "};",
+      "var results = service.RetrieveMultiple(query);",
+      "foreach (var row in results.Entities)",
+      "{",
+      "    $0",
+      "}"
+    ]
+  },
+  "Tracing": {
+    "prefix": "dv-trace",
+    "body": ["tracing.Trace(\"${1:message} {0}\", ${2:value});"]
+  }
+}

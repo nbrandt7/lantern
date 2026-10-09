@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lantern client settings",
+  "type": "object",
+  "properties": {
+    "org": {
+      "type": "string",
+      "description": "Dataverse org URL, e.g. https://contoso.crm.dynamics.com"
+    },
+    "environments": {
+      "type": "array",
+      "description": "DEV / TEST / PROD orgs for this client. When set, the active environment's org is used everywhere.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "org"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short label like DEV, TEST, PROD."
+          },
+          "org": {
+            "type": "string",
+            "description": "Org URL."
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Ask before pushes, imports, publishing, and data changes here."
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "string",
+      "description": "Name of the active environment. Switch it from the status bar or the client's menu."
+    },
+    "accounts": {
+      "type": "object",
+      "description": "Microsoft account per environment name, set by Sign In As.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "account": {
+      "type": "string",
+      "description": "Microsoft account to sign in with for this client, e.g. nathan@clientdomain.com. Use \"Sign In As\u2026\" on the client to set it. Empty: whichever account VS Code picks."
+    },
+    "tenant": {
+      "type": "string",
+      "description": "Optional Entra tenant ID or domain, for a guest account in the client's tenant (Web API sign-in only)."
+    },
+    "solutions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Solution unique names to pull (not display names)."
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Extra tables for JS form types when solutions don't include them."
+    },
+    "username": {
+      "type": "string",
+      "description": "Optional sign-in hint for XrmDefinitelyTyped."
+    },
+    "scriptNamespace": {
+      "type": "string",
+      "description": "Root namespace for new form scripts, e.g. \"Contoso\". Defaults to the folder name."
+    },
+    "webResourceRoots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Folders (relative to this client folder) whose relative file paths are web resource names, e.g. [\"src/WebResources\"]."
+    },
+    "earlyBound": {
+      "type": "object",
+      "description": "C# early-bound class generation (pac modelbuilder).",
+      "properties": {
+        "outDir": {
+          "type": "string",
+          "description": "Output folder relative to this client folder. A builderSettings.json here takes priority."
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "plugins": {
+      "type": "object",
+      "description": "Plug-in assembly or package IDs by assembly name, for assemblies not found in the solution folder.",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F-]{36}$"
+      }
+    },
+    "fileTables": {
+      "type": "object",
+      "description": "Table each script works with, by path relative to this client folder, e.g. {\"src/WebResources/cr36f_AccountFormOnLoad\": \"account\"}. Used for column completions when the file name doesn't make it obvious.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}
