@@ -4,7 +4,15 @@
   "description": "A suite for Dynamics 365 and Power Platform developers who work across many clients: client folders and repos, environments and app registrations, pull with review, web resource, plug-in, PCF, and Power Pages deployment, Custom APIs, SQL and FetchXML queries, record inspection, plug-in traces and steps, metadata, and Dataverse-aware IntelliSense.",
   "version": "0.9.5",
   "publisher": "local",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nbrandt7/lantern.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nbrandt7/lantern/issues"
+  },
+  "homepage": "https://github.com/nbrandt7/lantern#readme",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -2563,7 +2571,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node test/unit.js && node test/run.js && node test/webview.js",
-    "package": "vsce package --allow-missing-repository --skip-license"
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
