@@ -12,6 +12,7 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 - [Sign-in and multiple accounts](#sign-in-and-multiple-accounts)
 - [Contributing](#contributing)
 - [Known limitations](#known-limitations)
+- [License](#license)
 
 ## Features at a glance
 
@@ -506,3 +507,7 @@ You can run a single suite with `node test/unit.js` (after `npm run compile`).
 - Pull recognizes the classic unpacked solution layout (`.cdsproj` or `Other/Solution.xml`). Repos written by Dataverse's native Git integration use a YAML layout that isn't supported yet.
 - XrmDefinitelyTyped is a .NET Framework tool and only runs on Windows.
 - Older non-SDK-style plug-in projects may need Visual Studio or MSBuild to build.
+
+## License
+
+Lantern for Dataverse is released under the [MIT License](LICENSE). By contributing, you agree that your contributions are licensed under the same terms.
