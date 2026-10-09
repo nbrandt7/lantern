@@ -54,7 +54,7 @@ You need [Node.js](https://nodejs.org/) 20 or later and Git.
 
 ```bash
 git clone https://github.com/nbrandt7/lantern.git
-cd REPO
+cd lantern
 npm install
 npm run package
 ```
