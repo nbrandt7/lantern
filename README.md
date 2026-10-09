@@ -53,7 +53,7 @@ To update, download the newer `.vsix` from [Releases](../../releases) and instal
 You need [Node.js](https://nodejs.org/) 20 or later and Git.
 
 ```bash
-git clone https://github.com/OWNER/REPO.git
+git clone https://github.com/nbrandt7/lantern.git
 cd REPO
 npm install
 npm run package
