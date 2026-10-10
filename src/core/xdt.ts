@@ -32,8 +32,8 @@ export async function generateFormTypes(
   if (process.platform !== "win32") throw new UserError("XrmDefinitelyTyped is a .NET Framework tool and needs Windows.");
   const { org, solutions, entities } = client.config;
   const username = client.config.username || client.config.account;
-  if (!org) throw new UserError(`Set "org" in ${client.name}/client.json first.`);
-  if (!solutions.length && !entities.length) throw new UserError(`Set "solutions" or "entities" in ${client.name}/client.json.`);
+  if (!org) throw new UserError(`Set "org" in ${client.name}/.lantern/config.json first.`);
+  if (!solutions.length && !entities.length) throw new UserError(`Set "solutions" or "entities" in ${client.name}/.lantern/config.json.`);
 
   const connectionString = [
     "AuthType=OAuth",

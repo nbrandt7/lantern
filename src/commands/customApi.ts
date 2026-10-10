@@ -147,7 +147,7 @@ export function registerCustomApisAndForms(serviceFor: (c: Client) => MetadataSe
       if (!file || !client?.config.org) return;
       const library = resolveWebResourceName(file, client)?.name;
       if (!library) {
-        void vscode.window.showWarningMessage(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in client.json.`);
+        void vscode.window.showWarningMessage(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in .lantern/config.json.`);
         return;
       }
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));

@@ -36,7 +36,7 @@
   "icon": "media/icon.png",
   "main": "./out/extension.js",
   "activationEvents": [
-    "workspaceContains:**/client.json",
+    "workspaceContains:**/.lantern/config.json",
     "workspaceContains:**/*.cdsproj"
   ],
   "contributes": {
@@ -91,6 +91,11 @@
     ],
     "commands": [
       {
+        "command": "lantern.flows.open",
+        "title": "Open Power Automate Flow",
+        "category": "Lantern"
+      },
+      {
         "command": "lantern.initWorkspace",
         "title": "Initialize Workspace",
         "category": "Lantern"
@@ -109,7 +114,7 @@
       },
       {
         "command": "lantern.openClientConfig",
-        "title": "Edit client.json",
+        "title": "Edit Client Configuration",
         "category": "Lantern",
         "icon": "$(settings-gear)"
       },
@@ -609,7 +614,7 @@
       },
       {
         "command": "lantern.solutions.addLocal",
-        "title": "Add to client.json",
+        "title": "Add to Client Configuration",
         "category": "Lantern",
         "icon": "$(add)"
       },
@@ -895,6 +900,10 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "lantern.flows.open",
+          "when": "false"
+        },
         {
           "command": "lantern.configureClient",
           "when": "false"
@@ -2266,7 +2275,7 @@
         "lantern.autoConfigureNewFolders": {
           "type": "boolean",
           "default": true,
-          "description": "Add client.json and jsconfig.json to new subfolders of the clients folder automatically."
+          "description": "In folder mode, add .lantern/config.json and jsconfig.json to new subfolders of the clients folder automatically. Internal storage requires explicit client initialization."
         },
         "lantern.authMethod": {
           "type": "string",
@@ -2355,10 +2364,10 @@
           ],
           "default": "outside",
           "enumDescriptions": [
-            "Keep each client's settings in Lantern's own storage on this machine, so nothing of Lantern's is in the client's folder or repo.",
-            "Keep them in client.json inside the client folder (kept out of git through the repo's local exclude list)."
+            "Use Lantern's internal storage. Ignores local configuration files and waits for explicit client initialization.",
+            "Keep them in .lantern/config.json inside the client folder (kept out of git through the repo's local exclude list)."
           ],
-          "description": "Where client settings (org, environments, solutions, accounts...) are kept. Reload the window after changing it."
+          "description": "Where client settings (org, environments, solutions, accounts...) are kept. Storage modes are independent; switching does not import, move, or delete configurations."
         },
         "lantern.createJsconfig": {
           "type": "boolean",
@@ -2370,7 +2379,7 @@
     "jsonValidation": [
       {
         "fileMatch": [
-          "**/client.json",
+          "**/.lantern/config.json",
           "**/*.lantern-client.json"
         ],
         "url": "./schemas/client.schema.json"
@@ -2571,7 +2580,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node test/unit.js && node test/run.js && node test/webview.js",
+    "test": "npm run compile && node test/unit.js && node test/flows.js && node test/run.js && node test/webview.js",
     "package": "vsce package"
   },
   "devDependencies": {

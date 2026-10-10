@@ -21,7 +21,11 @@ async function test(name, fn) {
     console.log(`  ✗ ${name}\n${err.stack.split("\n").slice(0, 6).join("\n")}`);
   }
 }
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
+const tmp = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
+  fs.mkdirSync(path.join(dir, ".lantern"));
+  return dir;
+};
 
 (async () => {
   // ---------- SQL ----------
@@ -163,9 +167,46 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
 
   // ---------- clients and environments ----------
   const clients = out("core/clients.js");
+  await test("clients: internal mode never probes local configuration and removal preserves it", () => {
+    const dir = tmp();
+    const local = path.join(dir, ".lantern/config.json");
+    const content = '{"org":"local.crm.dynamics.com"}';
+    fs.writeFileSync(local, content);
+    clients.useClientStore(path.join(dir, "internal-store"));
+    const exists = fs.existsSync;
+    const read = fs.readFileSync;
+    const guard = (file) => assert.notEqual(path.resolve(String(file)), local, "internal mode must not access local config");
+    fs.existsSync = (file) => { guard(file); return exists(file); };
+    fs.readFileSync = (file, ...args) => { guard(file); return read(file, ...args); };
+    try {
+      assert.equal(clients.readClient(dir), undefined);
+      const c = clients.ensureClientConfig(dir, { org: "internal.crm.dynamics.com" }, { jsconfig: false });
+      assert.equal(c.orgHost, "internal.crm.dynamics.com");
+      c.save();
+      clients.removeClientConfig(dir);
+      assert.equal(clients.readClient(dir), undefined);
+    } finally {
+      fs.existsSync = exists;
+      fs.readFileSync = read;
+      clients.useClientStore(undefined);
+    }
+    assert.equal(fs.readFileSync(local, "utf8"), content);
+    assert.equal(clients.readClient(dir).orgHost, "local.crm.dynamics.com");
+  });
+  await test("clients: only .lantern/config.json is recognized as local configuration", () => {
+    const dir = tmp();
+    const otherNames = ["client.json", "config.json", "xdt.json", ".lantern/client.json"];
+    for (const name of otherNames) fs.writeFileSync(path.join(dir, name), JSON.stringify({ org: "ignored.crm.dynamics.com" }));
+    assert.equal(clients.readClient(dir), undefined);
+    const c = clients.ensureClientConfig(dir, { org: "correct.crm.dynamics.com" }, { jsconfig: false });
+    assert.equal(c.configFile, path.join(dir, ".lantern/config.json"));
+    assert.equal(c.orgHost, "correct.crm.dynamics.com");
+    assert.equal(clients.scanClients(dir).clients[0].configFile, c.configFile);
+    for (const name of otherNames) assert.equal(JSON.parse(fs.readFileSync(path.join(dir, name))).org, "ignored.crm.dynamics.com");
+  });
   await test("clients: environments resolve org, account, tenant, protection", () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({
       org: "acme.crm.dynamics.com", account: "me@a.com", tenant: "t1",
       environments: [{ name: "DEV", org: "acme.crm.dynamics.com" }, { name: "PROD", org: "https://acme-prod.crm.dynamics.com/", protected: true, account: "old@p.com", tenant: "t2" }],
       environment: "PROD",
@@ -178,11 +219,11 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
   });
   await test("clients: accounts save per environment, and unpinning sticks", () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ account: "me@a.com", environments: [{ name: "DEV", org: "a.crm.dynamics.com" }, { name: "PROD", org: "b.crm.dynamics.com" }], environment: "PROD" }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ account: "me@a.com", environments: [{ name: "DEV", org: "a.crm.dynamics.com" }, { name: "PROD", org: "b.crm.dynamics.com" }], environment: "PROD" }));
     const c = clients.readClient(dir);
     c.config.account = "p@b.com";
     c.save();
-    const file = () => JSON.parse(fs.readFileSync(path.join(dir, "client.json"), "utf8"));
+    const file = () => JSON.parse(fs.readFileSync(path.join(dir, ".lantern/config.json"), "utf8"));
     assert.deepStrictEqual([file().accounts, file().account], [{ PROD: "p@b.com" }, "me@a.com"]);
     c.config.account = "";
     c.save();
@@ -191,7 +232,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
   });
   await test("clients: edits to lists survive save; switching saves the environment", () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ environments: [{ name: "DEV", org: "a.crm.dynamics.com" }, { name: "TEST", org: "t.crm.dynamics.com" }] }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ environments: [{ name: "DEV", org: "a.crm.dynamics.com" }, { name: "TEST", org: "t.crm.dynamics.com" }] }));
     const c = clients.readClient(dir);
     assert.strictEqual(c.envName, "DEV", "defaults to the first environment");
     c.config.solutions.push("X");
@@ -202,10 +243,10 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
   });
   await test("clients: a single org ignores a stale environment name; bad JSON reads as no client", () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ org: "x.crm.dynamics.com", environment: "GHOST" }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ org: "x.crm.dynamics.com", environment: "GHOST" }));
     const c = clients.readClient(dir);
     assert.deepStrictEqual([c.envName, c.config.org, c.isProtected], ["", "https://x.crm.dynamics.com", false]);
-    fs.writeFileSync(path.join(dir, "client.json"), "{ not json");
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), "{ not json");
     assert.strictEqual(clients.readClient(dir), undefined);
   });
 
@@ -448,7 +489,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
     assert.strictEqual(pac.accountFromAuthList(list, "spn"), undefined, "service principals have no account");
     assert.strictEqual(pac.accountFromAuthList(list, "nope"), undefined);
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ environments: [{ name: "UAT-2", org: "a.crm.dynamics.com" }] }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ environments: [{ name: "UAT-2", org: "a.crm.dynamics.com" }] }));
     assert.strictEqual(pac.profileName(clients.readClient(dir)), `${path.basename(dir).replace(/[^a-zA-Z0-9]/g, "")}UAT2`.slice(0, 30));
   });
 
@@ -767,7 +808,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
     const S = vscode.__state;
     const auth = out("ui/auth.js");
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ org: "a.crm.dynamics.com" }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ org: "a.crm.dynamics.com" }));
     const client = clients.readClient(dir);
     S.sessionOptions = [];
     S.accounts = ["me@a.com", "other@a.com"];
@@ -787,13 +828,13 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
     client.config.account = "missing@a.com";
     await assert.rejects(auth.getToken(client, { silent: true }), /Not signed in as missing@a\.com yet/, "silent never prompts");
     S.newSignInAccount = "someone@else.com";
-    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but .*client\.json says to use missing@a\.com/);
+    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but .*config\.json says to use missing@a\.com/);
     delete S.newSignInAccount;
 
     const dataverse = auth.dataverseFor(client);
     assert.strictEqual(dataverse.orgUrl, "https://a.crm.dynamics.com");
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({}));
-    assert.throws(() => auth.dataverseFor(clients.readClient(dir)), /Set "org" in .*client\.json first/);
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({}));
+    assert.throws(() => auth.dataverseFor(clients.readClient(dir)), /Set "org" in .*config\.json first/);
     auth.clearTokenCache();
   });
 
@@ -900,7 +941,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lantern-unit-"));
   await test("pac: secrets masked in logs; app registrations get their own profile; sites parsed", () => {
     assert.strictEqual(pac.loggedArgs(["auth", "create", "--clientSecret", "s", "--password", "p", "--tenant", "t"]), "auth create --clientSecret ******** --password ******** --tenant t");
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, "client.json"), JSON.stringify({ environments: [{ name: "PROD", org: "p.crm.dynamics.com", appId: "abcd1234-0000-0000-0000-000000000000" }] }));
+    fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({ environments: [{ name: "PROD", org: "p.crm.dynamics.com", appId: "abcd1234-0000-0000-0000-000000000000" }] }));
     const c = clients.readClient(dir);
     assert.strictEqual(c.config.appId, "abcd1234-0000-0000-0000-000000000000", "app registrations can be per environment");
     assert.ok(pac.profileName(c).endsWith("PRODappabcd") && pac.profileName(c).length <= 30);

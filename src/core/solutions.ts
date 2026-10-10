@@ -163,7 +163,7 @@ export function isWebResourceCandidate(file: string, client: Client): boolean {
 /**
  * Web resource unique name for a local file, from (in order):
  *  1. the solution's <file>.data.xml, which records the exact name
- *  2. a folder listed in client.json "webResourceRoots"
+ *  2. a folder listed in .lantern/config.json "webResourceRoots"
  *  3. the path after a "WebResources" folder
  *  4. the path from the first publisher-prefix folder (e.g. "acme_/scripts/x.js")
  * Returns a guess flagged as such when only 4 applies, so the caller can confirm it.

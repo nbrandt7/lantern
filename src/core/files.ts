@@ -4,13 +4,13 @@ import * as path from "path";
 /** Folders never searched for solutions, projects, or web resources. */
 export const SKIP_DIRS = new Set([
   "node_modules", "bin", "obj", "dist", "out", ".git", ".vs", ".vscode",
-  "typings", "typings.tmp", ".pull-backup",
+  "typings", "typings.tmp", ".pull-backup", ".lantern",
 ]);
 
 /** Never copied, compared, or overwritten by a pull. */
 export const PULL_IGNORE = new Set([
   ".git", "bin", "obj", "node_modules", ".vs", "typings", "typings.tmp", ".pull-backup",
-  "jsconfig.json", "client.json",
+  "jsconfig.json", ".lantern",
 ]);
 
 export function readJson<T>(file: string): T {

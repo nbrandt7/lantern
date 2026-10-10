@@ -2,6 +2,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { DEFAULT_JOB_FILTER, EnvVarInfo, fetchSolutionWebResources, SolutionWebResource, fetchEnvironment, fetchEnvVars, fetchJobs, fetchSteps, JobFilter, JobInfo, StepInfo } from "../core/admin";
 import { Client } from "../core/clients";
+import { fetchSolutionFlows, SolutionFlow } from "../core/flows";
 import { currentBranch } from "../core/git";
 import { HistoryEntry, QueryHistory } from "../core/history";
 import { findPagesSites, findPcfControls, PcfControl } from "../commands/pcfPages";
@@ -28,9 +29,10 @@ export type LocalNode =
   | { kind: "savedQuery"; client: Client; file: string }
   | { kind: "recentQueries"; client: Client }
   | { kind: "recentQuery"; client: Client; entry: HistoryEntry }
-  /** A solution: listed in client.json, pulled into the folder, or both. */
+  /** A solution: listed in .lantern/config.json, pulled into the folder, or both. */
   | { kind: "solution"; client: Client; unique: string; folder?: string; configured: boolean }
-  | { kind: "solutionPart"; client: Client; unique: string; part: "tables" | "webresources" }
+  | { kind: "solutionPart"; client: Client; unique: string; part: "tables" | "webresources" | "flows" }
+  | { kind: "flow"; client: Client; unique: string; flow: SolutionFlow }
   | { kind: "webResource"; client: Client; unique: string; resource: SolutionWebResource }
   | { kind: "plugin"; client: Client; plugin: PluginProject }
   | { kind: "hint"; client: Client; text: string; command?: vscode.Command; icon?: string; tooltip?: string }
@@ -107,9 +109,11 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
 
   /** Redraws the tree, or reloads one node (a section reloads from Dataverse). */
   refresh(node?: TreeNode): void {
+    if (!node) for (const key of this.loaded.keys()) if (key.includes("|flows|")) this.loaded.delete(key);
     if (node && node.kind === "section" && !("tab" in node)) this.loaded.delete(sectionKey(node.client, node.section));
     if (node && (node.kind === "solution" || node.kind === "solutionPart")) {
       this.loaded.delete(`${clientKey(node.client)}|webresources|${node.unique.toLowerCase()}`);
+      this.loaded.delete(`${clientKey(node.client)}|flows|${node.unique.toLowerCase()}`);
       this.serviceFor(node.client).forget("solution-tables/");
     }
     if (node && node.kind === "client") for (const k of [...this.loaded.keys()]) if (k.startsWith(`${node.client.name}@`)) this.loaded.delete(k);
@@ -167,8 +171,8 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
           out.push({
             kind: "hint",
             client: c,
-            text: "Set the org URL in client.json to connect",
-            command: { command: "lantern.openClientConfig", title: "Edit client.json", arguments: [c] },
+            text: "Set the org URL in .lantern/config.json to connect",
+            command: { command: "lantern.openClientConfig", title: "Edit .lantern/config.json", arguments: [c] },
           });
         }
         const group = (g: Extract<LocalNode, { kind: "group" }>["group"]) => this.keep(`${c.name}|group|${g}`, { kind: "group", client: c, group: g }, node);
@@ -214,10 +218,22 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         return [
           { kind: "solutionPart", client: node.client, unique: node.unique, part: "tables" },
           { kind: "solutionPart", client: node.client, unique: node.unique, part: "webresources" },
+          { kind: "solutionPart", client: node.client, unique: node.unique, part: "flows" },
         ];
       }
       case "solutionPart": {
         const c = node.client;
+        if (node.part === "flows") {
+          const key = `${clientKey(c)}|flows|${node.unique.toLowerCase()}`;
+          const hit = this.loaded.get(key);
+          if (hit) return hit;
+          const flows = await fetchSolutionFlows(dataverseFor(c), node.unique);
+          const list: TreeNode[] = flows.length
+            ? flows.map((flow) => ({ kind: "flow", client: c, unique: node.unique, flow }))
+            : [message("No Power Automate flows in this solution")];
+          this.loaded.set(key, list);
+          return list;
+        }
         if (node.part === "tables") {
           const svc = this.serviceFor(c);
           const [tables, inSolution] = await Promise.all([svc.tables(), svc.solutionTables([node.unique])]);
@@ -378,7 +394,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
   }
 
   /**
-   * The client's solutions: the ones listed in client.json (pulled or not), then any
+   * The client's solutions: the ones listed in .lantern/config.json (pulled or not), then any
    * unpacked solution folders that aren't listed yet.
    */
   private solutions(client: Client): TreeNode[] {
@@ -495,7 +511,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         item.iconPath = new vscode.ThemeIcon("folder", new vscode.ThemeColor("disabledForeground"));
         item.contextValue = "unconfigured";
         item.resourceUri = vscode.Uri.file(node.dir);
-        item.tooltip = "Folder without client.json. Configure it to use it as a client.";
+        item.tooltip = "Folder without .lantern/config.json. Configure it to use it as a client.";
         return item;
       }
       case "group": {
@@ -522,13 +538,13 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
       case "solution": {
         const item = new vscode.TreeItem(node.unique, node.client.config.org ? C.Collapsed : C.None);
         const state = node.folder ? "pulled" : node.configured ? "not pulled yet" : "";
-        item.description = [state, node.configured ? "" : "not in client.json"].filter(Boolean).join(", ");
+        item.description = [state, node.configured ? "" : "not in .lantern/config.json"].filter(Boolean).join(", ");
         item.iconPath = new vscode.ThemeIcon("package", node.configured ? undefined : new vscode.ThemeColor("disabledForeground"));
         item.contextValue = `solution.${node.configured ? "configured" : "local"}${node.folder ? ".pulled" : ""}`;
         item.tooltip = [
           node.unique,
           node.folder ? `Unpacked in ${path.relative(node.client.dir, node.folder) || "."}` : "Not in this folder yet. Pull to bring it down.",
-          node.configured ? "" : 'Not listed in client.json "solutions", so Pull won\'t sync it.',
+          node.configured ? "" : 'Not listed in .lantern/config.json "solutions", so Pull won\'t sync it.',
         ].filter(Boolean).join("\n");
         if (node.folder) item.resourceUri = vscode.Uri.file(node.folder);
         return item;
@@ -575,8 +591,17 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         return item;
       }
       case "solutionPart": {
-        const item = new vscode.TreeItem(node.part === "tables" ? "Tables" : "Web resources", C.Collapsed);
-        item.iconPath = new vscode.ThemeIcon(node.part === "tables" ? "table" : "file-code");
+        const item = new vscode.TreeItem({ tables: "Tables", webresources: "Web resources", flows: "Power Automate flows" }[node.part], C.Collapsed);
+        item.iconPath = new vscode.ThemeIcon({ tables: "table", webresources: "file-code", flows: "git-merge" }[node.part]);
+        return item;
+      }
+      case "flow": {
+        const item = new vscode.TreeItem(node.flow.name, C.None);
+        item.description = node.flow.state === 1 ? "On" : node.flow.state === 0 ? "Off" : "Suspended";
+        item.iconPath = new vscode.ThemeIcon("git-merge");
+        item.contextValue = "flow";
+        item.tooltip = `${node.flow.name}\n${node.flow.description}\nOpen the Power Automate designer inside VS Code.`;
+        item.command = { command: "lantern.flows.open", title: "Open Flow", arguments: [node] };
         return item;
       }
       case "webResource": {

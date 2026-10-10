@@ -148,7 +148,7 @@ async function dependencyTarget(arg: Node | vscode.Uri | undefined): Promise<{ c
     return undefined;
   }
   const name = resolveWebResourceName(file, client)?.name;
-  if (!name) throw new UserError(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in client.json.`);
+  if (!name) throw new UserError(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in .lantern/config.json.`);
   const wr = await withProgress(`Looking up ${name}`, () => dataverseFor(client).findWebResource(name));
   if (wr === undefined) return undefined;
   if (!wr) throw new UserError(`${name} doesn't exist in ${client.orgHost} yet, so nothing depends on it.`);

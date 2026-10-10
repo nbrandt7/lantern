@@ -7,7 +7,7 @@ import { settings } from "./context";
 
 const cache = new Map<string, { token: string; expires: number }>();
 
-/** VS Code's secret storage, where app registration secrets are kept (never in client.json). */
+/** VS Code's secret storage, where app registration secrets are kept (never in .lantern/config.json). */
 interface Secrets {
   get(key: string): PromiseLike<string | undefined>;
   store(key: string, value: string): PromiseLike<void>;
@@ -29,7 +29,7 @@ export async function storeAppSecret(client: Client, secret: string): Promise<vo
 /** Token for an app registration, with the client credentials flow. */
 async function appToken(client: Client): Promise<{ token: string; expires: number }> {
   const { appId, tenant, org } = client.config;
-  if (!tenant) throw new UserError(`${client.name} signs in with an app registration, which needs "tenant" in client.json.`);
+  if (!tenant) throw new UserError(`${client.name} signs in with an app registration, which needs "tenant" in .lantern/config.json.`);
   const secret = await appSecret(client);
   if (!secret) throw new UserError(`There's no secret stored for app ${appId} on ${client.name}. Use "Sign In As…" to enter it again.`);
   let response: { ok: boolean; status: number; json(): Promise<unknown> };
@@ -80,7 +80,7 @@ export function scopesFor(client: Client): string[] {
   return scopes;
 }
 
-/** The account a client signs in with: pinned in client.json, or whatever it last used. */
+/** The account a client signs in with: pinned in .lantern/config.json, or whatever it last used. */
 export function accountInUse(client: Client): { account: string; pinned: boolean } | undefined {
   if (client.config.appId) return { account: `app ${client.config.appId}`, pinned: true };
   if (client.config.account) return { account: client.config.account, pinned: true };
@@ -90,9 +90,9 @@ export function accountInUse(client: Client): { account: string; pinned: boolean
 
 /**
  * Access token for a client's org.
- *  - "vscode": VS Code's built-in Microsoft account sign-in. When client.json pins an
+ *  - "vscode": VS Code's built-in Microsoft account sign-in. When .lantern/config.json pins an
  *    "account", that account is always used for this client, whatever other clients use.
- *  - "azureCli": "az account get-access-token", picked per tenant (client.json "tenant").
+ *  - "azureCli": "az account get-access-token", picked per tenant (.lantern/config.json "tenant").
  * silent: never prompt. Used by editor features (completions, hovers) that run while you
  * type; they quietly do nothing until you've signed in some other way.
  */
@@ -154,7 +154,7 @@ async function sessionFor(client: Client, silent: boolean): Promise<vscode.Authe
   if (!session) throw new UserError(silent ? "Not signed in to Dataverse yet." : "Sign-in was cancelled.");
   if (pinned && !sameAccount(session.account.label, pinned)) {
     throw new UserError(
-      `Signed in as ${session.account.label}, but ${client.name}/client.json says to use ${pinned}. ` +
+      `Signed in as ${session.account.label}, but ${client.name}/.lantern/config.json says to use ${pinned}. ` +
         `Use "Sign In As…" on ${client.name} to sign in with ${pinned} or change the account.`
     );
   }
@@ -195,7 +195,7 @@ export function forgetSignIn(client: Client): void {
 }
 
 export function dataverseFor(client: Client, options: { silent?: boolean } = {}): DataverseClient {
-  if (!client.config.org) throw new UserError(`Set "org" in ${client.name}/client.json first.`);
+  if (!client.config.org) throw new UserError(`Set "org" in ${client.name}/.lantern/config.json first.`);
   return new DataverseClient(client.config.org, (_org, fresh) => getToken(client, { ...options, fresh }));
 }
 

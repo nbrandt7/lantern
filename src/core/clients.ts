@@ -8,7 +8,7 @@ import { isDirectory, readJson, writeJson } from "./files";
 
 /**
  * Folder outside the workspace where Lantern keeps each client's settings, so nothing
- * of Lantern's sits in a client's repo. Undefined: the older layout, client.json in the folder.
+ * of Lantern's sits in a client's repo. Undefined: use .lantern/config.json in the folder.
  */
 let storeDir: string | undefined;
 /** Folders the person removed Lantern from, which shouldn't be configured again automatically. */
@@ -30,13 +30,9 @@ export function storedConfigPath(dir: string): string | undefined {
   return storeDir ? path.join(storeDir, `${folderKey(dir)}.lantern-client.json`) : undefined;
 }
 
-/** The settings file in use for a folder: the stored one, else a client.json in the folder. */
+/** Storage modes are independent: never inspect or import the other mode's config. */
 function configPathFor(dir: string): string {
-  const stored = storedConfigPath(dir);
-  if (stored && fs.existsSync(stored)) return stored;
-  const legacy = path.join(dir, CLIENT_FILE);
-  if (fs.existsSync(legacy) || !stored) return legacy;
-  return stored;
+  return storedConfigPath(dir) ?? path.join(dir, CLIENT_FILE);
 }
 
 /** Whether git tracks a file (committed or staged). Unknown (no git) counts as tracked, to be safe. */
@@ -44,23 +40,6 @@ function isTracked(file: string): boolean {
   const r = spawnSync("git", ["ls-files", "--error-unmatch", path.basename(file)], { cwd: path.dirname(file), stdio: "ignore" });
   if (r.error) return true;
   return r.status === 0;
-}
-
-/**
- * Moves a folder's client.json into the store, unless the repo tracks it (then a team
- * put it there on purpose, so it stays). Returns true when it moved.
- */
-export function moveConfigToStore(dir: string): boolean {
-  const stored = storedConfigPath(dir);
-  const legacy = path.join(dir, CLIENT_FILE);
-  if (!stored || !fs.existsSync(legacy) || fs.existsSync(stored)) return false;
-  if (fs.existsSync(path.join(dir, ".git")) || isInsideGitRepo(dir)) {
-    if (isTracked(legacy)) return false;
-  }
-  fs.mkdirSync(path.dirname(stored), { recursive: true });
-  writeJson(stored, normalizeConfig(readJson<Partial<ClientConfig>>(legacy)));
-  fs.rmSync(legacy);
-  return true;
 }
 
 export function ignoredFolders(): string[] {
@@ -130,11 +109,11 @@ export function shouldAutoConfigure(dir: string, workspaceRoot: string): boolean
   return fs.existsSync(path.join(dir, ".git")) || !isInsideGitRepo(workspaceRoot);
 }
 
-export const CLIENT_FILE = "client.json";
+export const CLIENT_FILE = ".lantern/config.json";
 const RESERVED = new Set(["node_modules", "scripts", "tools", "out", "dist"]);
 
 /** Files the tooling adds to a client folder, kept out of the client's repo via .git/info/exclude. */
-const LOCAL_FILES = ["jsconfig.json", "client.json", "typings/", "typings.tmp/", ".pull-backup/", "exports/"];
+const LOCAL_FILES = ["jsconfig.json", ".lantern/config.json", "typings/", "typings.tmp/", ".pull-backup/", "exports/"];
 
 export interface EnvironmentConfig {
   /** Short label like DEV, TEST, PROD. */
@@ -195,7 +174,7 @@ export class Client {
 
   config: ClientConfig;
 
-  /** The settings file: in Lantern's store, or a client.json in the folder (older layout, or committed by a team). */
+  /** The settings file: in Lantern's store, or .lantern/config.json in the client folder. */
   get configFile(): string {
     return configPathFor(this.dir);
   }
@@ -245,7 +224,7 @@ export class Client {
   }
 
   /**
-   * Writes edits made to `config` back to client.json. An account set while an
+   * Writes edits made to `config` back to .lantern/config.json. An account set while an
    * environment is active is saved as that environment's account.
    */
   save(): void {
@@ -357,7 +336,7 @@ export function readClient(dir: string): Client | undefined {
 
 export interface FolderScan {
   clients: Client[];
-  /** Subfolders that look like clients but have no client.json yet. */
+  /** Subfolders that look like clients but have no .lantern/config.json yet. */
   unconfigured: string[];
 }
 
@@ -380,11 +359,10 @@ export function scanClients(root: string): FolderScan {
 }
 
 /**
- * Makes sure a client folder has client.json and jsconfig.json and that both stay
+ * Makes sure a client folder has .lantern/config.json and jsconfig.json and that both stay
  * out of git. Never overwrites an existing jsconfig, so generated-type mode sticks.
  */
 export function ensureClientConfig(dir: string, initial: Partial<ClientConfig> = {}, options: { jsconfig?: boolean } = {}): Client {
-  migrateXdtJson(dir);
   if (options.jsconfig !== false && !fs.existsSync(path.join(dir, "jsconfig.json"))) writeJsconfig(dir, "generic");
   const existing = loadStored(dir);
   const stored = existing ? normalizeConfig({ ...initial, ...existing }) : normalizeConfig(initial);
@@ -413,9 +391,14 @@ export function isLanternJsconfig(file: string): boolean {
  */
 export function removeClientConfig(dir: string): void {
   const stored = storedConfigPath(dir);
-  if (stored && fs.existsSync(stored)) fs.rmSync(stored);
-  const legacy = path.join(dir, CLIENT_FILE);
-  if (fs.existsSync(legacy) && !isTracked(legacy)) fs.rmSync(legacy);
+  if (stored) {
+    if (fs.existsSync(stored)) fs.rmSync(stored);
+  } else {
+    const file = path.join(dir, CLIENT_FILE);
+    if (fs.existsSync(file) && !isTracked(file)) fs.rmSync(file);
+    const localDir = path.join(dir, ".lantern");
+    if (fs.existsSync(localDir) && fs.readdirSync(localDir).length === 0) fs.rmdirSync(localDir);
+  }
   const jsconfig = path.join(dir, "jsconfig.json");
   if (fs.existsSync(jsconfig) && isLanternJsconfig(jsconfig) && !isTracked(jsconfig)) fs.rmSync(jsconfig);
   setIgnored(dir, true);
@@ -430,13 +413,6 @@ export function writeJsconfig(dir: string, mode: "generic" | "xdt"): void {
       ? { compilerOptions: { checkJs: true, target: "ES2020", types: [] }, include: ["**/*.js", "typings/**/*.d.ts"], exclude }
       : { compilerOptions: { checkJs: true, target: "ES2020", types: ["xrm"] }, include: ["**/*.js"], exclude }
   );
-}
-
-function migrateXdtJson(dir: string): void {
-  const old = path.join(dir, "xdt.json");
-  if (!fs.existsSync(old) || fs.existsSync(path.join(dir, CLIENT_FILE))) return;
-  writeJson(path.join(dir, CLIENT_FILE), normalizeConfig(readJson(old)));
-  fs.rmSync(old);
 }
 
 /**

@@ -21,6 +21,7 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 | **Clients and environments** | A folder per client, optionally linked to its Azure DevOps repo; DEV, TEST, and PROD environments per client; protected environments that confirm before any change; a per-client Microsoft account or app registration |
 | **Solutions** | Pull with a review step, export, import, copy between environments, version bumps, solution checker, generated documentation, environment comparison |
 | **Web resources** | Push and compare from the editor, TypeScript web resources, push on save |
+| **Power Automate** | Browse cloud flows under each solution and open the Power Automate designer inside VS Code |
 | **Plug-ins** | Build and push (registers new assemblies and classes, updates existing ones), get source from a registered assembly, compare deployed with local, new projects and classes, step registration |
 | **Script IntelliSense** | Typed `Xrm`, org-specific form types, column, control, tab, and section completions, live warnings, form handler CodeLens |
 | **Queries** | SQL and FetchXML with IntelliSense, `UPDATE`/`DELETE`/`INSERT` with preview, CSV import, run as another user, copy as code, saved and recent queries |
@@ -34,6 +35,14 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 ## Installation
 
 Lantern runs in VS Code 1.90 or later.
+
+Opening Power Automate flows inside the window requires a desktop VS Code build with the [Integrated Browser](https://code.visualstudio.com/docs/debugtest/integrated-browser).
+
+To apply a dark style inside that browser, install **Integrated Browser Extensions** and enable its proposed browser API once: run **Preferences: Configure Runtime Arguments**, add `"enable-proposed-api": ["boylett.integrated-browser-extensions"]` to `argv.json`, then fully restart VS Code. When you open a flow, Lantern registers its bundled Power Automate userscript in the browser extension's global script directory setting. This works across all client folders and flows; you do not need to configure each one. If the browser styling extension is missing, Lantern offers to install it. The userscript covers the Power Automate site and its `webshell.suite.office.com` editor frame. It uses a color inversion filter, so some images or unusual controls may look imperfect. The browser styling extension can inject scripts and styles into browser pages, so only enable it if you trust it.
+
+Expand **Clients > your client > Solutions > your solution > Power Automate flows**, then click a flow to open its designer. The list comes from the client's selected Dataverse environment and shows each flow's status. Use Lantern's Refresh action to reload it after adding or changing flows.
+
+The designer uses its own Microsoft browser sign-in session; sign in with an account that has access to the selected environment. Edits and saves happen directly in Power Automate, independently of Lantern's pull/review and protected-environment prompts. Classic workflows and desktop flows are excluded from this list.
 
 ### Install the latest release
 
@@ -117,9 +126,9 @@ contoso                        DEV  contoso-dev.crm.dynamics.com  ⎇ main
 - **Solutions** lists the client's solutions and whether each one has been pulled into the folder. The **+** button lists the org's solutions (unmanaged first, with publisher and version) so you can add several at once, then offers to pull. Right-click a solution to remove it from the client (its folder stays) or reveal its folder. An unpacked solution folder the client doesn't list yet shows up dimmed, with a button to add it.
 - **Pack and Import from Your Files…** (right-click a pulled solution) packs what's in your folder with `pac solution pack` and imports it into any environment, which is useful for deploying from source control.
 - Org sections load when you expand them and stay loaded until you click their refresh icon, so redrawing the tree never refetches.
-- Every subfolder of your workspace is a client. New subfolders you create in Explorer are configured automatically, and Lantern's files are added to the repo's `.git/info/exclude`, so they never show up as changes in the client's repo.
+- Configure workspace subfolders as clients using **Configure as Client**. In folder mode, eligible new subfolders can be configured automatically, and Lantern's files are added to the repo's `.git/info/exclude`, so they never show up as changes in the client's repo.
 - **New Client** clones the repo when you give a URL. If the folder already exists, it attaches it to the repo without overwriting local files. It then restores NuGet packages for any `.sln`.
-- Each connected client has inline buttons for **Switch Environment**, **Pull**, **Publish All Customizations**, and **Edit client.json**.
+- Each connected client has inline buttons for **Switch Environment**, **Pull**, **Publish All Customizations**, and **Edit Client Configuration**.
 - The **status bar** shows the active file's client and environment, in the warning color on a protected environment. Click it for that client's actions, including switching environments.
 
 ### Environments (DEV, TEST, PROD)
@@ -376,7 +385,7 @@ None of them change data. They need a VS Code version with language model tools.
 
 ### Client settings
 
-Lantern keeps each client's settings (org, environments, solutions, accounts) in its own storage on your machine, not in the client's folder, so nothing of Lantern's appears in the client's repo. **Edit client.json** (client right-click) opens them, with completions and validation from a JSON schema. A `client.json` already in a folder moves to the storage the next time VS Code starts, unless the repo tracks it (then a team committed it on purpose, and it stays). To keep settings in the folder instead, set `lantern.clientSettingsLocation` to `folder`.
+Lantern has two independent client settings modes. The default `outside` mode uses Lantern's internal storage and ignores local configuration files. Use **Configure as Client** or **New Client** to initialize internal settings; startup and folder discovery do not initialize them automatically. In `folder` mode, settings live only in `.lantern/config.json`. **Edit Client Configuration** opens the active mode's settings with schema validation. Switching modes never imports, moves, or deletes settings. Root-level `client.json`, root-level `config.json`, `.lantern/client.json`, and `xdt.json` are ignored.
 
 ```json
 {
@@ -404,14 +413,14 @@ Lantern keeps each client's settings (org, environments, solutions, accounts) in
 
 The one file Lantern writes into a client folder is `jsconfig.json`, which typed Xrm IntelliSense needs. Lantern adds it, and its other local files (`typings/`, `.pull-backup/`, `exports/`), to the local exclude list (`.git/info/exclude`) of whichever repo holds the folder, even when the repo's root is above it. They never show in Source Control and no `.gitignore` changes are needed. Turn the file off with `lantern.createJsconfig`.
 
-Lantern only configures a workspace subfolder as a client automatically when it's a repo of its own (a cloned client) or the workspace folder isn't a repo. If you open a repo directly, its project folders are left alone. **Remove Lantern from Folder…** (client right-click) removes Lantern's settings and the `jsconfig.json` it created, and keeps the folder from being configured again.
+In folder mode, Lantern only configures a workspace subfolder as a client automatically when it's a repo of its own (a cloned client) or the workspace folder isn't a repo. If you open a repo directly, its project folders are left alone. **Remove Lantern from Folder…** (client right-click) removes Lantern's settings and the `jsconfig.json` it created, and keeps the folder from being configured again.
 
 ### VS Code settings
 
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `lantern.clientsFolder` | first workspace folder | Folder holding client folders |
-| `lantern.autoConfigureNewFolders` | `true` | Configure new subfolders of the clients folder automatically |
+| `lantern.autoConfigureNewFolders` | `true` | In folder mode, configure new subfolders of the clients folder automatically |
 | `lantern.authMethod` | `vscode` | `azureCli` if a tenant blocks VS Code's Microsoft sign-in |
 | `lantern.publishAfterPush` | `true` | Publish web resources after pushing |
 | `lantern.pushOnSave` | `false` | Push web resources when saved |
@@ -423,7 +432,7 @@ Lantern only configures a workspace subfolder as a client automatically when it'
 | `lantern.metadata.completions` | `true` | Column, control, tab, and section suggestions and hovers |
 | `lantern.diagnostics.enabled` | `true` | Live warnings in form scripts |
 | `lantern.query.maxRows` | `5000` | Row limit for queries without `TOP`, and for `UPDATE`/`DELETE` |
-| `lantern.clientSettingsLocation` | `outside` | Keep client settings in Lantern's storage (`outside`) or in `client.json` in the folder (`folder`) |
+| `lantern.clientSettingsLocation` | `outside` | Keep client settings in Lantern's storage (`outside`) or in `.lantern/config.json` in the folder (`folder`) |
 | `lantern.createJsconfig` | `true` | Create `jsconfig.json` in client folders for typed Xrm IntelliSense |
 
 ## Sign-in and multiple accounts

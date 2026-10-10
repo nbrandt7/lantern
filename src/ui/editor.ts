@@ -98,7 +98,7 @@ export class DataverseCodeLens implements vscode.CodeLensProvider {
   /**
    * Above each function a form runs: which forms and events call it. Handlers that
    * point at a function this file doesn't define get a warning at the top.
-   * Uses the forms of the script's table (from the file name, an annotation, or client.json).
+   * Uses the forms of the script's table (from the file name, an annotation, or .lantern/config.json).
    */
   /**
    * Each plug-in class in the file: Build and Push, its registration in the
