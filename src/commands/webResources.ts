@@ -39,7 +39,7 @@ async function nameFor(file: string, client: Client, quiet = false): Promise<str
   if (quiet) return undefined;
   return vscode.window.showInputBox({
     title: `Web resource name for ${path.basename(file)}`,
-    prompt: 'Unique name in Dataverse, including the publisher prefix. Tip: list your web resource folder in "webResourceRoots" in client.json to skip this.',
+    prompt: 'Unique name in Dataverse, including the publisher prefix. Tip: list your web resource folder in "webResourceRoots" in .lantern/config.json to skip this.',
     value: resolved?.name ?? path.basename(file),
     ignoreFocusOut: true,
   });

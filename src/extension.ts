@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { ensureClientConfig, excludeLocally, isClientFolderName, moveConfigToStore, readClient, removeClientConfig, shouldAutoConfigure, useClientStore } from "./core/clients";
+import { ensureClientConfig, excludeLocally, isClientFolderName, readClient, removeClientConfig, shouldAutoConfigure, useClientStore } from "./core/clients";
 import { languageForExtensionless } from "./core/solutions";
 import { configureFolder, initWorkspace, newClient, openClientConfig, openInBrowser, restoreDotnet } from "./commands/clients";
 import { generateEarlyBound, generateJsTypes } from "./commands/build";
@@ -16,6 +16,7 @@ import { migrateLegacySettings, noticeLegacyExtension } from "./ui/migrate";
 import { registerAnalysisCommands } from "./commands/analysis";
 import { registerEnvironmentCommands } from "./commands/environments";
 import { registerSolutionOps } from "./commands/solutionOps";
+import { openFlow } from "./commands/flows";
 import { registerStepCommands } from "./commands/registerStep";
 import { registerCsvImport } from "./commands/csvImport";
 import { registerSecurityCommands } from "./commands/security";
@@ -113,6 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const doc of vscode.workspace.textDocuments) diagnostics.schedule(doc, 0);
     }),
     ...registerSolutionOps(tableDocs, checker),
+    cmd("flows.open", (node) => openFlow(node)),
     ...registerStepCommands(serviceFor, () => clients.reloadSections("steps")),
     ...registerCsvImport(serviceFor, results),
     ...registerSecurityCommands(serviceFor, results, tableDocs),
@@ -229,7 +231,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeActiveTextEditor(() => statusBar.update()),
     vscode.workspace.onDidOpenTextDocument((doc: vscode.TextDocument) => setExtensionlessLanguage(doc)),
     vscode.workspace.onDidSaveTextDocument((doc: vscode.TextDocument) => {
-      if (path.basename(doc.uri.fsPath) === "client.json" || doc.uri.fsPath.endsWith(".lantern-client.json")) refreshAll();
+      if (doc.uri.fsPath.endsWith(".lantern-client.json") ||
+        (path.basename(doc.uri.fsPath) === "config.json" && path.basename(path.dirname(doc.uri.fsPath)) === ".lantern")) refreshAll();
       onSavePush(doc);
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -238,6 +241,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
       if (e.affectsConfiguration(SECTION)) {
+        if (e.affectsConfiguration(`${SECTION}.clientSettingsLocation`)) setUpClientSettingsStore(context);
         clearTokenCache();
         refreshAll();
       }
@@ -290,7 +294,7 @@ function watchRoots(context: vscode.ExtensionContext, onChange: () => void): voi
         return;
       }
       if (!isDir || !isClientFolderName(name)) return;
-      if (settings().autoConfigureNewFolders && !readClient(uri.fsPath) && shouldAutoConfigure(uri.fsPath, root)) {
+      if (settings().clientSettingsLocation === "folder" && settings().autoConfigureNewFolders && !readClient(uri.fsPath) && shouldAutoConfigure(uri.fsPath, root)) {
         const client = ensureClientConfig(uri.fsPath, {}, { jsconfig: settings().createJsconfig });
         void restoreDotnet(client, write);
         void vscode.window.showInformationMessage(`Configured new client folder ${name}.`, "Edit Client Settings").then((choice: string | undefined) => {
@@ -307,9 +311,8 @@ function watchRoots(context: vscode.ExtensionContext, onChange: () => void): voi
 
 /** Folders created while VS Code was closed get configured on startup. */
 /**
- * Client settings live in Lantern's storage, outside the client folders (unless the
- * "lantern.clientSettingsLocation" setting says "folder"). Untracked client.json files move
- * there, and every client's Lantern files are added to its repo's local exclude list.
+ * Selects the configured storage mode without importing or moving local files.
+ * Every initialized client's Lantern files are added to its repo's local exclude list.
  */
 function setUpClientSettingsStore(context: vscode.ExtensionContext): void {
   const base = context.globalStorageUri.fsPath;
@@ -323,14 +326,13 @@ function setUpClientSettingsStore(context: vscode.ExtensionContext): void {
       continue;
     }
     for (const dir of [root, ...entries.filter((e) => e.isDirectory()).map((e) => path.join(root, e.name))]) {
-      if (outside && moveConfigToStore(dir)) write(`Moved ${path.basename(dir)}/client.json out of the folder into Lantern's settings.\n`);
       if (readClient(dir)) excludeLocally(dir);
     }
   }
 }
 
 function autoConfigureExisting(): void {
-  if (!settings().autoConfigureNewFolders) return;
+  if (settings().clientSettingsLocation !== "folder" || !settings().autoConfigureNewFolders) return;
   for (const dir of scanAll().unconfigured) {
     const root = workspaceRoots().find((r) => path.dirname(path.resolve(dir)) === path.resolve(r));
     // Project folders inside a repo opened directly aren't clients.
@@ -376,7 +378,7 @@ async function clientActions(arg: unknown): Promise<void> {
     { label: "$(person) Edit user settings", command: "editUserSettings", args: [client] },
     { label: "$(plug) Test connection", command: "testConnection", args: [client] },
     { label: "$(globe) Open in browser", command: "openInBrowser", args: [client] },
-    { label: "$(settings-gear) Edit client.json", command: "openClientConfig", args: [client] }
+    { label: "$(settings-gear) Edit .lantern/config.json", command: "openClientConfig", args: [client] }
   );
   const pick = await vscode.window.showQuickPick(items, { placeHolder: `${client.name} · ${client.config.org || "no org set"}` });
   if (pick) await vscode.commands.executeCommand(`${SECTION}.${pick.command}`, ...pick.args);

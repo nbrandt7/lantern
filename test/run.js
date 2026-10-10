@@ -530,7 +530,7 @@ const step = async (name, fn) => {
 
 (async () => {
   S.workspaceFolders = [root];
-  // Most steps check client.json in the folder; the outside-the-folder default has its own step.
+  // Most steps check .lantern/config.json in the folder; the outside-the-folder default has its own step.
   S.config["clientSettingsLocation"] = "folder";
   const ext = require("../out/extension.js");
   const secretStore = new Map();
@@ -561,11 +561,11 @@ const step = async (name, fn) => {
   await step("new client clones the ADO repo, writes config, restores .NET", async () => {
     S.inputAnswers.push(repoUrl, "acme-dynamics", "acme.crm.dynamics.com", "AcmeCore");
     await run("newClient");
-    const cfg = JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"));
     assert.strictEqual(cfg.org, "https://acme.crm.dynamics.com");
     assert.deepStrictEqual(cfg.solutions, ["AcmeCore"]);
     assert.ok(fs.existsSync(path.join(acme, "jsconfig.json")));
-    assert.match(fs.readFileSync(path.join(acme, ".git/info/exclude"), "utf8"), /\/client\.json/);
+    assert.match(fs.readFileSync(path.join(acme, ".git/info/exclude"), "utf8"), /\/\.lantern\/config\.json/);
     assert.match(cliLog(), /dotnet restore .*Acme\.sln/);
     assert.strictEqual(g(["status", "--porcelain"], acme).trim(), "", "tooling files must not show as repo changes");
   });
@@ -573,7 +573,7 @@ const step = async (name, fn) => {
   await step("new local-only client (no repo, no org)", async () => {
     S.inputAnswers.push("", "beta", "");
     await run("newClient");
-    assert.ok(fs.existsSync(path.join(root, "beta/client.json")));
+    assert.ok(fs.existsSync(path.join(root, "beta/.lantern/config.json")));
     assert.ok(!fs.existsSync(path.join(root, "beta/.git")));
   });
 
@@ -693,7 +693,7 @@ const step = async (name, fn) => {
     return tree.getChildren(projects);
   };
   const readAssembly = require("../out/core/assembly.js").readAssembly;
-  const clientJson = () => JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8"));
+  const clientJson = () => JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"));
 
   await step("build and push plug-in: updates the registered assembly in place, like the Plugin Registration Tool", async () => {
     const [pluginNode] = await pluginGroup();
@@ -816,7 +816,7 @@ const step = async (name, fn) => {
     pluginStore.types = pluginStore.types.filter((t) => t._pluginassemblyid_value !== second.pluginassemblyid);
     const cfg = clientJson();
     delete cfg.plugins.AcmePlugins;
-    fs.writeFileSync(path.join(acme, "client.json"), JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(path.join(acme, ".lantern/config.json"), JSON.stringify(cfg, null, 2));
 
     // Signed with another key: the original is in the folder, so Lantern offers it and builds again.
     fs.writeFileSync(path.join(acmePluginsDir, "other.snk"), strongName.generateKeyFile());
@@ -851,7 +851,7 @@ const step = async (name, fn) => {
     pluginStore.types = pluginStore.types.filter((t) => t._pluginassemblyid_value !== created3.pluginassemblyid);
     const cfg3 = clientJson();
     delete cfg3.plugins.AcmePlugins;
-    fs.writeFileSync(path.join(acme, "client.json"), JSON.stringify(cfg3, null, 2));
+    fs.writeFileSync(path.join(acme, ".lantern/config.json"), JSON.stringify(cfg3, null, 2));
     fs.rmSync(info);
     fs.writeFileSync(csproj, fs.readFileSync(csproj, "utf8").replace("other.snk", "AcmePlugins.snk"));
     fs.rmSync(path.join(acmePluginsDir, "other.snk"));
@@ -999,7 +999,7 @@ const step = async (name, fn) => {
     S.inputAnswers.push("Plugins/AcmePlugins/Model", "account, contact", "Acme.Model");
     await run("generateEarlyBound", { client: require("../out/core/clients.js").readClient(acme) });
     assert.match(cliLog(), new RegExp(`pac modelbuilder build --outdirectory .*Plugins${SEP}AcmePlugins${SEP}Model --namespace Acme\\.Model --entitynamesfilter account;contact`));
-    const cfg = JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"));
     assert.deepStrictEqual(cfg.earlyBound, { outDir: "Plugins/AcmePlugins/Model", namespace: "Acme.Model", entities: ["account", "contact"] });
     assert.ok(fs.existsSync(path.join(acme, "Plugins/AcmePlugins/Model/Entities.cs")));
   });
@@ -1048,7 +1048,7 @@ const step = async (name, fn) => {
     assert.ok(cs.every((l) => l.range.args[0] === 2), "lenses sit on the class line");
     assert.match(cs[1].command.title, /^\$\(plug\) /, "the registered steps for the class");
     assert.strictEqual(cs[2].command.arguments[0].typeName, "Acme.AccountPlugin");
-    assert.strictEqual((await lens.provideCodeLenses(doc(path.join(acme, "client.json")))).length, 0);
+    assert.strictEqual((await lens.provideCodeLenses(doc(path.join(acme, ".lantern/config.json")))).length, 0);
 
     // "N steps" shows the class in the tree, under Plug-ins > Projects, with its steps expanded.
     S.revealed = undefined;
@@ -1250,7 +1250,7 @@ const step = async (name, fn) => {
     assert.strictEqual(none[0].command.command, "lantern.metadata.setFileTable");
     S.quickPickAnswers.push("Account");
     await run("metadata.setFileTable", vscode.Uri.file(utils));
-    const cfg = JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"));
     assert.strictEqual(cfg.fileTables["scripts/utils.js"], "account");
     const now = await complete(utils, 'formContext.getAttribute("');
     assert.ok(now.some((i) => i.label.label === "fax"));
@@ -1512,7 +1512,7 @@ const step = async (name, fn) => {
     ]);
 
     await run("metadata.addEarlyBound", accountNode);
-    const cfg = JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"));
     assert.ok(cfg.earlyBound.entities.includes("account"));
     assert.strictEqual(cfg.earlyBound.entities.filter((e) => e === "account").length, 1, "not added twice");
   });
@@ -1832,7 +1832,7 @@ const step = async (name, fn) => {
   await step("accounts: pin one per client, sign in as it, separate tokens, pac profile kept in line", async () => {
     const auth = require("../out/ui/auth.js");
     const clientsMod = require("../out/core/clients.js");
-    const cfgPath = path.join(acme, "client.json");
+    const cfgPath = path.join(acme, ".lantern/config.json");
     const cfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
 
     // Pick an account VS Code already knows.
@@ -1867,7 +1867,7 @@ const step = async (name, fn) => {
     // Pinned account VS Code isn't signed into: sign in now, and refuse if it ends up as someone else.
     client.config.account = "nathan@clientc.com";
     S.newSignInAccount = "someone@else.com";
-    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but acme-dynamics\/client\.json says to use nathan@clientc\.com/);
+    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but acme-dynamics\/\.lantern\/config\.json says to use nathan@clientc\.com/);
     assert.strictEqual(S.sessionOptions[S.sessionOptions.length - 1].clearSessionPreference, true);
     await assert.rejects(auth.getToken(client, { silent: true }), /Not signed in as nathan@clientc\.com yet/);
 
@@ -1909,7 +1909,7 @@ const step = async (name, fn) => {
   });
 
   await step("solutions: add from the org, open their web resources, list unlisted folders, remove", async () => {
-    const cfgPath = path.join(acme, "client.json");
+    const cfgPath = path.join(acme, ".lantern/config.json");
     const cfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     let offered;
     S.quickPickAnswers.push((list) => {
@@ -1940,12 +1940,12 @@ const step = async (name, fn) => {
     await run("webResources.open", resources[0]);
     assert.strictEqual(S.lastShow.target.uri.scheme, "dataverse-wr", "no local copy: opens the Dataverse version");
 
-    // An unpacked solution that isn't in client.json yet.
+    // An unpacked solution that isn't in .lantern/config.json yet.
     const other = path.join(acme, "OtherSol");
     fs.mkdirSync(path.join(other, "Other"), { recursive: true });
     fs.writeFileSync(path.join(other, "Other/Solution.xml"), "<UniqueName>OtherSol</UniqueName>");
     const third = (await kids(group)).find((n) => n.unique === "OtherSol");
-    assert.strictEqual(metaTree.getTreeItem(third).description, "pulled, not in client.json");
+    assert.strictEqual(metaTree.getTreeItem(third).description, "pulled, not in .lantern/config.json");
     await run("solutions.addLocal", third);
     assert.deepStrictEqual(cfg().solutions, ["AcmeCore", "Cr7e97c", "OtherSol"]);
 
@@ -2296,7 +2296,7 @@ const step = async (name, fn) => {
   });
 
   await step("environments: add, switch, per-environment caches, accounts, and pac profiles", async () => {
-    const cfgPath = path.join(acme, "client.json");
+    const cfgPath = path.join(acme, ".lantern/config.json");
     const original = fs.readFileSync(cfgPath, "utf8");
     const cfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     S.inputAnswers.push("DEV", "TEST", "acme-test.crm.dynamics.com");
@@ -2525,18 +2525,18 @@ const step = async (name, fn) => {
     fs.rmSync(odd);
   });
 
-  await step("client commands: configure a folder, open client.json, open in browser, client actions", async () => {
+  await step("client commands: configure a folder, open .lantern/config.json, open in browser, client actions", async () => {
     const gamma = path.join(root, "gamma");
     fs.mkdirSync(gamma, { recursive: true });
     const unconfigured = (await metaTree.getChildren()).find((n) => n.kind === "unconfigured" && n.dir === gamma);
-    assert.ok(unconfigured, "a folder without client.json is listed as unconfigured");
+    assert.ok(unconfigured, "a folder without .lantern/config.json is listed as unconfigured");
     await run("configureClient", unconfigured);
-    assert.ok(fs.existsSync(path.join(gamma, "client.json")));
+    assert.ok(fs.existsSync(path.join(gamma, ".lantern/config.json")));
     assert.match(lastMessage()[1], /gamma is configured/);
     fs.rmSync(gamma, { recursive: true, force: true });
 
     await run("openClientConfig", { client: acmeClient() });
-    assert.strictEqual(S.lastShow.target.fsPath, path.join(acme, "client.json"));
+    assert.strictEqual(S.lastShow.target.fsPath, path.join(acme, ".lantern/config.json"));
     await run("openInBrowser", { client: acmeClient() });
     assert.strictEqual(S.opened.pop(), "https://acme.crm.dynamics.com/main.aspx");
 
@@ -2673,7 +2673,7 @@ const step = async (name, fn) => {
   });
 
   await step("app registration: secret in secret storage, client credentials token, its own pac profile, masked in logs", async () => {
-    const cfgPath = path.join(acme, "client.json");
+    const cfgPath = path.join(acme, ".lantern/config.json");
     const original = fs.readFileSync(cfgPath, "utf8");
     const appId = "11112222-3333-4444-5555-666677778888";
     S.quickPickAnswers.push("$(key) Use an app registration (service principal)…");
@@ -2684,7 +2684,7 @@ const step = async (name, fn) => {
     await run("signInAs", { client: acmeClient() });
     const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     assert.deepStrictEqual([cfg.appId, cfg.tenant, cfg.account], [appId, "contoso.onmicrosoft.com", ""]);
-    assert.ok(!fs.readFileSync(cfgPath, "utf8").includes("s3cret-value"), "the secret never goes in client.json");
+    assert.ok(!fs.readFileSync(cfgPath, "utf8").includes("s3cret-value"), "the secret never goes in .lantern/config.json");
     assert.deepStrictEqual(tokenRequests[0].form, { client_id: appId, client_secret: "s3cret-value", scope: "https://acme.crm.dynamics.com/.default", grant_type: "client_credentials" });
     assert.match(tokenRequests[0].url, /login\.microsoftonline\.com\/contoso\.onmicrosoft\.com\/oauth2\/v2\.0\/token$/);
     assert.match(cliLog(), /pac auth create --name acmedynamicsapp1111 --environment https:\/\/acme\.crm\.dynamics\.com --applicationId 11112222-3333-4444-5555-666677778888 --clientSecret s3cret-value --tenant contoso\.onmicrosoft\.com/);
@@ -2779,7 +2779,7 @@ const step = async (name, fn) => {
     S.inputAnswers.push("acme");
     await run("pcf.push", control);
     assert.match(cliLog(), /pac pcf push --publisher-prefix acme\n  \(in .*PCF.Stars\)/);
-    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(acme, "client.json"), "utf8")).publisherPrefix, "acme", "remembered");
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8")).publisherPrefix, "acme", "remembered");
     fs.writeFileSync(logFile, "");
     await run("pcf.push", control);
     assert.match(cliLog(), /pcf push --publisher-prefix acme/, "not asked again");
@@ -2951,14 +2951,15 @@ const step = async (name, fn) => {
     assert.match(await textOf("lantern_where_used", { client: "acme-dynamics", table: "account", column: "fax" }), /Where .*fax/i);
   });
 
-  await step("client settings outside the folder: moved there, used everywhere, untracked files only", async () => {
+  await step("internal client settings: explicit initialization, local config ignored and preserved", async () => {
     const clientsMod = require("../out/core/clients.js");
     const store = path.join(tmp, "store", "clients");
     const ignored = path.join(tmp, "store", "ignored.json");
     clientsMod.useClientStore(store, ignored);
-    const before = fs.readFileSync(path.join(acme, "client.json"), "utf8");
-    assert.strictEqual(clientsMod.moveConfigToStore(acme), true);
-    assert.ok(!fs.existsSync(path.join(acme, "client.json")), "nothing of Lantern's settings left in the folder");
+    const before = fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8");
+    assert.strictEqual(clientsMod.readClient(acme), undefined, "local config does not initialize internal mode");
+    clientsMod.ensureClientConfig(acme, JSON.parse(before));
+    assert.strictEqual(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"), before, "initialization leaves local config untouched");
     const stored = clientsMod.storedConfigPath(acme);
     assert.match(path.basename(stored), /^acme-dynamics-[0-9a-f]{10}\.lantern-client\.json$/);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(stored, "utf8")).solutions, JSON.parse(before).solutions);
@@ -2970,7 +2971,7 @@ const step = async (name, fn) => {
     client.config.solutions.push("Extra");
     client.save();
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(stored, "utf8")).solutions.slice(-1), ["Extra"]);
-    assert.ok(!fs.existsSync(path.join(acme, "client.json")));
+    assert.strictEqual(fs.readFileSync(path.join(acme, ".lantern/config.json"), "utf8"), before);
     const tree = (await metaTree.getChildren()).find((n) => n.kind === "client" && n.client.name === "acme-dynamics");
     assert.ok(tree, "still a client in the tree");
     await run("openClientConfig", { client: acmeClient() });
@@ -2980,15 +2981,15 @@ const step = async (name, fn) => {
     assert.match(S.statusBarItems[0].text, /acme-dynamics/, "files in the folder still find their client");
     S.activeTextEditor = undefined;
 
-    // A client.json the repo tracks stays where the team put it.
+    // A .lantern/config.json the repo tracks stays where the team put it.
     const tracked = path.join(tmp, "tracked-client");
     fs.mkdirSync(tracked);
+    fs.mkdirSync(path.join(tracked, ".lantern"));
     execSync("git init -q && git config user.email t@t && git config user.name t", { cwd: tracked });
-    fs.writeFileSync(path.join(tracked, "client.json"), JSON.stringify({ org: "t.crm.dynamics.com" }));
-    execSync("git add client.json && git commit -qm c", { cwd: tracked });
-    assert.strictEqual(clientsMod.moveConfigToStore(tracked), false);
-    assert.ok(fs.existsSync(path.join(tracked, "client.json")));
-    assert.strictEqual(clientsMod.readClient(tracked).configFile, path.join(tracked, "client.json"));
+    fs.writeFileSync(path.join(tracked, ".lantern/config.json"), JSON.stringify({ org: "t.crm.dynamics.com" }));
+    execSync("git add .lantern/config.json && git commit -qm c", { cwd: tracked });
+    assert.ok(fs.existsSync(path.join(tracked, ".lantern/config.json")));
+    assert.strictEqual(clientsMod.readClient(tracked), undefined, "tracked local config is also ignored");
 
     // New clients go straight to the store; without a jsconfig when that's turned off.
     const fresh = path.join(tmp, "fresh-client");
@@ -2998,9 +2999,10 @@ const step = async (name, fn) => {
     assert.ok(fs.existsSync(clientsMod.storedConfigPath(fresh)));
 
     // Back to the folder layout for the remaining steps.
-    fs.writeFileSync(path.join(acme, "client.json"), before);
+    fs.writeFileSync(path.join(acme, ".lantern/config.json"), before);
     fs.rmSync(stored);
     clientsMod.useClientStore(undefined, ignored);
+    assert.strictEqual(clientsMod.readClient(acme).configFile, path.join(acme, ".lantern/config.json"));
   });
 
   await step("git: Lantern's files are excluded in the repo that holds the folder, wherever its root is", async () => {
@@ -3013,7 +3015,7 @@ const step = async (name, fn) => {
     clientsMod.ensureClientConfig(sub, { org: "s.crm.dynamics.com" });
     const exclude = fs.readFileSync(path.join(repo, ".git", "info", "exclude"), "utf8");
     assert.match(exclude, /^\/salon-api\/jsconfig\.json$/m);
-    assert.match(exclude, /^\/salon-api\/client\.json$/m);
+    assert.match(exclude, /^\/salon-api\/\.lantern\/config\.json$/m);
     const status = execSync("git status --porcelain --untracked-files=all", { cwd: repo }).toString();
     assert.strictEqual(status.trim(), "?? salon-api/Program.cs", "only the project's own file is untracked; Lantern's never show up");
 
@@ -3038,7 +3040,7 @@ const step = async (name, fn) => {
     fs.mkdirSync(folder);
     fs.writeFileSync(path.join(folder, "notes.txt"), "keep me");
     clientsMod.ensureClientConfig(folder, {});
-    assert.ok(fs.existsSync(path.join(folder, "jsconfig.json")) && fs.existsSync(path.join(folder, "client.json")));
+    assert.ok(fs.existsSync(path.join(folder, "jsconfig.json")) && fs.existsSync(path.join(folder, ".lantern/config.json")));
     S.messageAnswers.push("Remove");
     await run("removeClient", { client: clientsMod.readClient(folder) });
     assert.deepStrictEqual(fs.readdirSync(folder), ["notes.txt"], "only Lantern's files were removed");
@@ -3066,7 +3068,7 @@ const step = async (name, fn) => {
     const dir = path.join(root, "gamma");
     fs.mkdirSync(dir);
     for (const w of S.watchers) for (const l of w.create) l(vscode.Uri.file(dir));
-    assert.ok(fs.existsSync(path.join(dir, "client.json")));
+    assert.ok(fs.existsSync(path.join(dir, ".lantern/config.json")));
     assert.ok(fs.existsSync(path.join(dir, "jsconfig.json")));
   });
 
@@ -3078,6 +3080,33 @@ const step = async (name, fn) => {
   await step("pull without an org explains what to set", async () => {
     await run("pull", { client: require("../out/core/clients.js").readClient(path.join(root, "beta")) });
     assert.match(lastMessage()[1], /Set "org"/);
+  });
+
+  await step("internal mode: startup and new folders wait for explicit initialization", async () => {
+    const clientsMod = require("../out/core/clients.js");
+    const internalRoot = path.join(tmp, "internal-workspace");
+    const existing = path.join(internalRoot, "existing");
+    fs.mkdirSync(path.join(existing, ".lantern"), { recursive: true });
+    const local = path.join(existing, ".lantern/config.json");
+    const before = '{"org":"local.crm.dynamics.com"}';
+    fs.writeFileSync(local, before);
+    S.workspaceFolders = [internalRoot];
+    S.config["clientSettingsLocation"] = "outside";
+    S.config["autoConfigureNewFolders"] = true;
+    ext.activate({ ...context, subscriptions: [], globalStorageUri: vscode.Uri.file(path.join(tmp, "internal-storage")) });
+    assert.equal(clientsMod.readClient(existing), undefined);
+    assert.equal(fs.readFileSync(local, "utf8"), before);
+    assert.ok(!fs.existsSync(clientsMod.storedConfigPath(existing)), "startup does not initialize or migrate");
+    const added = path.join(internalRoot, "added");
+    fs.mkdirSync(added);
+    for (const w of S.watchers) for (const listener of w.create) listener(vscode.Uri.file(added));
+    assert.equal(clientsMod.readClient(added), undefined);
+    assert.deepEqual(fs.readdirSync(added), []);
+    assert.ok(!fs.existsSync(clientsMod.storedConfigPath(added)), "watcher does not initialize");
+    await run("configureClient", vscode.Uri.file(existing));
+    assert.ok(fs.existsSync(clientsMod.storedConfigPath(existing)), "explicit setup initializes internal storage");
+    assert.equal(fs.readFileSync(local, "utf8"), before);
+    assert.equal(clientsMod.readClient(existing).config.org, "", "explicit setup does not import the local org");
   });
 
   try {

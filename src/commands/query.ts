@@ -33,7 +33,7 @@ export function isFetchXml(text: string): boolean {
 export async function newQuery(arg?: unknown): Promise<void> {
   const client = await resolveClient(arg);
   if (!client?.config.org) {
-    if (client) void vscode.window.showWarningMessage(`Set "org" in ${client.name}/client.json first.`);
+    if (client) void vscode.window.showWarningMessage(`Set "org" in ${client.name}/.lantern/config.json first.`);
     return;
   }
   const content = [
@@ -86,7 +86,7 @@ export async function runQueryCommand(
     if (!client) return;
   }
   if (!client.config.org) {
-    void vscode.window.showWarningMessage(`Set "org" in ${client.name}/client.json first.`);
+    void vscode.window.showWarningMessage(`Set "org" in ${client.name}/.lantern/config.json first.`);
     return;
   }
   const selection = editor && editor.document === doc && !editor.selection.isEmpty ? doc.getText(editor.selection) : undefined;

@@ -17,7 +17,7 @@ export async function pullCommand(review: ReviewTree, arg: unknown, onDone: () =
     review.end();
   }
   if (!client.config.org) {
-    void vscode.window.showWarningMessage(`Set "org" in ${client.name}/client.json first.`);
+    void vscode.window.showWarningMessage(`Set "org" in ${client.name}/.lantern/config.json first.`);
     return;
   }
 
@@ -31,7 +31,7 @@ export async function pullCommand(review: ReviewTree, arg: unknown, onDone: () =
   if (!result) return;
 
   if (!result.session && !result.cloned.length) {
-    void vscode.window.showWarningMessage(`No solutions found in ${client.name}. Add solution unique names to "solutions" in client.json.`);
+    void vscode.window.showWarningMessage(`No solutions found in ${client.name}. Add solution unique names to "solutions" in .lantern/config.json.`);
     return;
   }
   const cloned = result.cloned.length ? `Cloned ${result.cloned.join(", ")}. ` : "";

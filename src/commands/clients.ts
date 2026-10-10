@@ -71,7 +71,7 @@ export async function newClient(onDone: () => void): Promise<void> {
 
   const org = await vscode.window.showInputBox({
     title: `${title} (3/4)`,
-    prompt: "Dataverse org URL. Optional; you can add it to client.json later.",
+    prompt: "Dataverse org URL. Optional; you can add it to .lantern/config.json later.",
     placeHolder: "https://contoso.crm.dynamics.com",
     ignoreFocusOut: true,
   });
@@ -103,10 +103,10 @@ export async function newClient(onDone: () => void): Promise<void> {
   onDone();
   if (!client) return;
 
-  const actions = client.config.org && client.config.solutions.length ? ["Pull from Dataverse", "Open client.json"] : ["Open client.json"];
+  const actions = client.config.org && client.config.solutions.length ? ["Pull from Dataverse", "Open .lantern/config.json"] : ["Open .lantern/config.json"];
   const choice = await vscode.window.showInformationMessage(`${client.name} is ready.`, ...actions);
   if (choice === "Pull from Dataverse") await vscode.commands.executeCommand("lantern.pull", client);
-  if (choice === "Open client.json") await openClientConfig(client);
+  if (choice === "Open .lantern/config.json") await openClientConfig(client);
 }
 
 export async function configureFolder(arg: unknown, onDone: () => void): Promise<void> {
@@ -115,7 +115,7 @@ export async function configureFolder(arg: unknown, onDone: () => void): Promise
   const client = ensureClientConfig(dir, {}, { jsconfig: settings().createJsconfig });
   await restoreDotnet(client, write);
   onDone();
-  void vscode.window.showInformationMessage(`${client.name} is configured. Add the org URL to client.json to connect it.`);
+  void vscode.window.showInformationMessage(`${client.name} is configured. Add the org URL to .lantern/config.json to connect it.`);
 }
 
 export async function openClientConfig(arg?: unknown): Promise<void> {

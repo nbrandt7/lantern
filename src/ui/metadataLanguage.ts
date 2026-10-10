@@ -25,11 +25,11 @@ export interface ScriptTable {
   service: MetadataService;
   table: string;
   /** How the table was decided, for the "which table" status message. */
-  source: "client.json" | "annotation" | "file name";
+  source: ".lantern/config.json" | "annotation" | "file name";
 }
 
 /**
- * The table a script works with: an explicit mapping in client.json, then an
+ * The table a script works with: an explicit mapping in .lantern/config.json, then an
  * XrmDefinitelyTyped annotation in the file, then a guess from the file name.
  */
 export async function tableForDocument(
@@ -43,7 +43,7 @@ export async function tableForDocument(
   const service = serviceFor(client);
   const rel = toPosix(path.relative(client.dir, doc.uri.fsPath));
   const mapped = client.config.fileTables[rel];
-  if (mapped) return { client, service, table: mapped, source: "client.json" };
+  if (mapped) return { client, service, table: mapped, source: ".lantern/config.json" };
   const annotated = tableFromAnnotation(doc.getText());
   if (annotated) return { client, service, table: annotated, source: "annotation" };
   let tables: TableMeta[] | undefined;

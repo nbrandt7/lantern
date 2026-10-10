@@ -8,7 +8,7 @@ export interface PacContext {
   token?: Cancellation;
   /**
    * Asked when a client's pac profile is signed in as a different account than the one
-   * pinned in client.json. Return true to delete and recreate the profile.
+   * pinned in .lantern/config.json. Return true to delete and recreate the profile.
    */
   confirmProfileAccount?: (profile: string, current: string, wanted: string) => Promise<boolean>;
   /** The stored secret for a client's app registration, for service principal profiles. */
@@ -47,11 +47,11 @@ export function profileName(client: Client): string {
 
 /**
  * One pac auth profile per client, named after the folder. Created on first use
- * (interactive sign-in), then just selected. When client.json pins an account, the
+ * (interactive sign-in), then just selected. When .lantern/config.json pins an account, the
  * profile's account is checked against it, so pac and the Web API agree on who you are.
  */
 export async function ensureAuth(ctx: PacContext, client: Client): Promise<void> {
-  if (!client.config.org) throw new UserError(`Set "org" in ${client.name}/client.json first.`);
+  if (!client.config.org) throw new UserError(`Set "org" in ${client.name}/.lantern/config.json first.`);
   const name = profileName(client);
   const wanted = client.config.account;
   ctx.log(`> pac auth select --name ${name}\n`);
