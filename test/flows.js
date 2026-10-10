@@ -79,7 +79,15 @@ const { openFlow } = require("../out/commands/flows");
   await assert.rejects(openFlow(nodes[0]), /Update VS Code/);
   vscode.commands.getCommands = async () => ["workbench.action.browser.open"];
   vscode.commands.executeCommand = async (...args) => { opened = args; };
-  await openFlow(nodes[0]);
+  vscode.__state.installedExtensions = ["boylett.integrated-browser-extensions"];
+  const context = {
+    extensionPath: "C:/extensions/lantern",
+    globalState: { get: () => undefined, update: async () => {} },
+  };
+  await openFlow(nodes[0], context);
+  assert.deepEqual(vscode.__state.configGlobal["integratedBrowserExtensions.extensionDirectory"], [
+    "C:\\extensions\\lantern\\resources\\browser-styles",
+  ]);
   assert.deepEqual(opened, ["workbench.action.browser.open", await flowEditorUrl(dv, flow.id)]);
   console.log("Flow tests passed: solution filtering, batching, empty/missing solutions, environment routing, tree caching/refresh, and browser launch.");
 })().catch(err => { console.error(err); process.exitCode = 1; });

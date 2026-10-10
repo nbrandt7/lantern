@@ -114,7 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const doc of vscode.workspace.textDocuments) diagnostics.schedule(doc, 0);
     }),
     ...registerSolutionOps(tableDocs, checker),
-    cmd("flows.open", (node) => openFlow(node)),
+    cmd("flows.open", (node) => openFlow(node, context)),
     ...registerStepCommands(serviceFor, () => clients.reloadSections("steps")),
     ...registerCsvImport(serviceFor, results),
     ...registerSecurityCommands(serviceFor, results, tableDocs),

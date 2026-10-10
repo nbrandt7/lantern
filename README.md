@@ -38,6 +38,8 @@ Lantern runs in VS Code 1.90 or later.
 
 Opening Power Automate flows inside the window requires a desktop VS Code build with the [Integrated Browser](https://code.visualstudio.com/docs/debugtest/integrated-browser).
 
+To apply a dark style inside that browser, install **Integrated Browser Extensions** and enable its proposed browser API once: run **Preferences: Configure Runtime Arguments**, add `"enable-proposed-api": ["boylett.integrated-browser-extensions"]` to `argv.json`, then fully restart VS Code. When you open a flow, Lantern registers its bundled Power Automate userscript in the browser extension's global script directory setting. This works across all client folders and flows; you do not need to configure each one. If the browser styling extension is missing, Lantern offers to install it. The userscript covers the Power Automate site and its `webshell.suite.office.com` editor frame. It uses a color inversion filter, so some images or unusual controls may look imperfect. The browser styling extension can inject scripts and styles into browser pages, so only enable it if you trust it.
+
 Expand **Clients > your client > Solutions > your solution > Power Automate flows**, then click a flow to open its designer. The list comes from the client's selected Dataverse environment and shows each flow's status. Use Lantern's Refresh action to reload it after adding or changing flows.
 
 The designer uses its own Microsoft browser sign-in session; sign in with an account that has access to the selected environment. Edits and saves happen directly in Power Automate, independently of Lantern's pull/review and protected-environment prompts. Classic workflows and desktop flows are excluded from this list.
