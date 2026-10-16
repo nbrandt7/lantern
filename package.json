@@ -1,7 +1,7 @@
 {
   "name": "lantern",
   "displayName": "Lantern for Dataverse",
-  "description": "A suite for Dynamics 365 and Power Platform developers who work across tenants: environments and app registrations, pull with review, web resource, plug-in, PCF, and Power Pages deployment, Custom APIs, SQL and FetchXML queries, record inspection, plug-in traces and steps, metadata, and Dataverse-aware IntelliSense.",
+  "description": "A suite for Dynamics 365 and Power Platform developers who work across tenants: environments and app registrations, web resource, plug-in, PCF, and Power Pages deployment, Custom APIs, SQL and FetchXML queries, record inspection, plug-in traces and steps, metadata, and Dataverse-aware IntelliSense.",
   "version": "0.9.5",
   "publisher": "nbrandt7",
   "author": "Nathan Brandt",
@@ -62,11 +62,6 @@
           "id": "lantern.clients",
           "name": "Tenants",
           "icon": "media/lantern.svg"
-        },
-        {
-          "id": "lantern.review",
-          "name": "Pull Review",
-          "when": "lantern.reviewActive"
         }
       ],
       "lanternResults": [
@@ -157,54 +152,6 @@
         "command": "lantern.signOut",
         "title": "Clear Cached Tokens",
         "category": "Lantern"
-      },
-      {
-        "command": "lantern.pull",
-        "title": "Pull from Dataverse",
-        "category": "Lantern",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "lantern.review.open",
-        "title": "Open Diff",
-        "category": "Lantern",
-        "icon": "$(git-compare)"
-      },
-      {
-        "command": "lantern.review.takeDataverse",
-        "title": "Take Dataverse Version",
-        "category": "Lantern",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "lantern.review.keepMine",
-        "title": "Keep My Version",
-        "category": "Lantern",
-        "icon": "$(check)"
-      },
-      {
-        "command": "lantern.review.takeAllPending",
-        "title": "Take Dataverse for All Undecided",
-        "category": "Lantern",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "lantern.review.keepAllPending",
-        "title": "Keep Mine for All Undecided",
-        "category": "Lantern",
-        "icon": "$(check-all)"
-      },
-      {
-        "command": "lantern.review.apply",
-        "title": "Apply Choices",
-        "category": "Lantern",
-        "icon": "$(save-all)"
-      },
-      {
-        "command": "lantern.review.cancel",
-        "title": "Discard Review",
-        "category": "Lantern",
-        "icon": "$(close)"
       },
       {
         "command": "lantern.pushWebResource",
@@ -625,22 +572,10 @@
         "icon": "$(add)"
       },
       {
-        "command": "lantern.solutions.addLocal",
-        "title": "Add to Tenant Configuration",
-        "category": "Lantern",
-        "icon": "$(add)"
-      },
-      {
         "command": "lantern.solutions.remove",
         "title": "Remove from Tenant",
         "category": "Lantern",
         "icon": "$(close)"
-      },
-      {
-        "command": "lantern.solutions.reveal",
-        "title": "Reveal Solution Folder",
-        "category": "Lantern",
-        "icon": "$(folder-opened)"
       },
       {
         "command": "lantern.webResources.open",
@@ -808,12 +743,6 @@
         "icon": "$(go-to-file)"
       },
       {
-        "command": "lantern.solutions.packAndImport",
-        "title": "Pack and Import from Your Files…",
-        "category": "Lantern",
-        "icon": "$(package)"
-      },
-      {
         "command": "lantern.tests.setup",
         "title": "Set Up Script Unit Tests",
         "category": "Lantern"
@@ -915,34 +844,6 @@
         {
           "command": "lantern.configureClient",
           "when": "false"
-        },
-        {
-          "command": "lantern.review.open",
-          "when": "false"
-        },
-        {
-          "command": "lantern.review.takeDataverse",
-          "when": "false"
-        },
-        {
-          "command": "lantern.review.keepMine",
-          "when": "false"
-        },
-        {
-          "command": "lantern.review.takeAllPending",
-          "when": "lantern.reviewActive"
-        },
-        {
-          "command": "lantern.review.keepAllPending",
-          "when": "lantern.reviewActive"
-        },
-        {
-          "command": "lantern.review.apply",
-          "when": "lantern.reviewActive"
-        },
-        {
-          "command": "lantern.review.cancel",
-          "when": "lantern.reviewActive"
         },
         {
           "command": "lantern.pushWebResource",
@@ -1185,15 +1086,7 @@
           "when": "false"
         },
         {
-          "command": "lantern.solutions.addLocal",
-          "when": "false"
-        },
-        {
           "command": "lantern.solutions.remove",
-          "when": "false"
-        },
-        {
-          "command": "lantern.solutions.reveal",
           "when": "false"
         },
         {
@@ -1255,10 +1148,6 @@
         {
           "command": "lantern.typescript.compileAndPush",
           "when": "resourceExtname == .ts"
-        },
-        {
-          "command": "lantern.solutions.packAndImport",
-          "when": "false"
         },
         {
           "command": "lantern.pcf.build",
@@ -1336,26 +1225,6 @@
           "group": "more"
         },
         {
-          "command": "lantern.review.takeAllPending",
-          "when": "view == lantern.review",
-          "group": "navigation@1"
-        },
-        {
-          "command": "lantern.review.keepAllPending",
-          "when": "view == lantern.review",
-          "group": "navigation@2"
-        },
-        {
-          "command": "lantern.review.apply",
-          "when": "view == lantern.review",
-          "group": "navigation@3"
-        },
-        {
-          "command": "lantern.review.cancel",
-          "when": "view == lantern.review",
-          "group": "navigation@4"
-        },
-        {
           "command": "lantern.query.new",
           "when": "view == lantern.clients",
           "group": "navigation@0"
@@ -1363,19 +1232,9 @@
       ],
       "view/item/context": [
         {
-          "command": "lantern.pull",
-          "when": "view == lantern.clients && viewItem == client.connected",
-          "group": "inline@1"
-        },
-        {
           "command": "lantern.openClientConfig",
           "when": "view == lantern.clients && viewItem =~ /^client/",
           "group": "inline@3"
-        },
-        {
-          "command": "lantern.pull",
-          "when": "view == lantern.clients && viewItem == client.connected",
-          "group": "1_sync@1"
         },
         {
           "command": "lantern.pushPlugin",
@@ -1416,21 +1275,6 @@
           "command": "lantern.pushPlugin",
           "when": "view == lantern.clients && viewItem == plugin",
           "group": "inline"
-        },
-        {
-          "command": "lantern.review.open",
-          "when": "view == lantern.review && viewItem == change",
-          "group": "inline@1"
-        },
-        {
-          "command": "lantern.review.takeDataverse",
-          "when": "view == lantern.review",
-          "group": "inline@2"
-        },
-        {
-          "command": "lantern.review.keepMine",
-          "when": "view == lantern.review",
-          "group": "inline@3"
         },
         {
           "command": "lantern.metadata.openTable",
@@ -1658,33 +1502,13 @@
           "group": "1_sync@4"
         },
         {
-          "command": "lantern.solutions.reveal",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\..*\\.pulled$/",
-          "group": "inline@1"
-        },
-        {
           "command": "lantern.refreshNode",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "inline@2"
-        },
-        {
-          "command": "lantern.solutions.addLocal",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.local/",
-          "group": "inline@2"
-        },
-        {
-          "command": "lantern.solutions.reveal",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\..*\\.pulled$/",
-          "group": "0_open@1"
-        },
-        {
-          "command": "lantern.solutions.addLocal",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.local/",
-          "group": "1_edit@1"
         },
         {
           "command": "lantern.solutions.remove",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "1_edit@2"
         },
         {
@@ -1754,32 +1578,32 @@
         },
         {
           "command": "lantern.solutions.export",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@1"
         },
         {
           "command": "lantern.solutions.copyTo",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@2"
         },
         {
           "command": "lantern.solutions.bumpVersion",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@3"
         },
         {
           "command": "lantern.solutions.check",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@4"
         },
         {
           "command": "lantern.solutions.document",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@5"
         },
         {
           "command": "lantern.environments.compare",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured/",
+          "when": "view == lantern.clients && viewItem == solution",
           "group": "2_alm@6"
         },
         {
@@ -1901,11 +1725,6 @@
           "command": "lantern.pages.upload",
           "when": "view == lantern.clients && viewItem == pagesSite",
           "group": "0_sync@1"
-        },
-        {
-          "command": "lantern.solutions.packAndImport",
-          "when": "view == lantern.clients && viewItem =~ /^solution\\.configured\\.pulled$/",
-          "group": "2_alm@0"
         },
         {
           "command": "lantern.removeClient",
@@ -2296,7 +2115,7 @@
             "Azure CLI (az account get-access-token). Use this if a client's tenant blocks the first option."
           ],
           "default": "vscode",
-          "description": "How to sign in to the Dataverse Web API for web resource push and compare. Pull, plug-ins, and early-bound generation use pac's own sign-in."
+          "description": "How to sign in to the Dataverse Web API for web resource push and compare. Plug-ins and early-bound generation use pac's own sign-in."
         },
         "lantern.publishAfterPush": {
           "type": "boolean",
@@ -2512,7 +2331,7 @@
       {
         "id": "lantern.start",
         "title": "Get started with Lantern",
-        "description": "Select a tenant, sign in, and use pull, push, and queries.",
+        "description": "Select a tenant, sign in, and use push and queries.",
         "steps": [
           {
             "id": "client",
@@ -2545,17 +2364,6 @@
             },
             "completionEvents": [
               "onCommand:lantern.environments.add"
-            ]
-          },
-          {
-            "id": "pull",
-            "title": "Pull with review",
-            "description": "Bring Dataverse's version down and choose what to take.\n[Pull](command:lantern.pull)",
-            "media": {
-              "markdown": "media/walkthrough/pull.md"
-            },
-            "completionEvents": [
-              "onCommand:lantern.pull"
             ]
           },
           {

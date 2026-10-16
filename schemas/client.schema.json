@@ -89,7 +89,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Solution unique names to pull (not display names)."
+      "description": "Solution unique names shown in the Solutions tree (not display names)."
     },
     "entities": {
       "type": "array",

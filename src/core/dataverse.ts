@@ -1,4 +1,5 @@
 import { UserError } from "./errors";
+import { logEvent } from "./logger";
 
 /** A token for the org; fresh=true when the last one was rejected and must not be reused. */
 export type TokenProvider = (org: string, fresh?: boolean) => Promise<string>;
@@ -51,10 +52,18 @@ export class DataverseClient {
    */
   private async request(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<HttpResponse> {
     const url = /^https?:\/\//i.test(path) ? path : this.base + path;
+    const endpoint = url.split("?")[0];
     let freshToken = false;
     let throttled = 0;
     for (;;) {
-      const token = await this.getToken(this.org, freshToken);
+      const started = Date.now();
+      let token: string;
+      try {
+        token = await this.getToken(this.org, freshToken);
+      } catch (error) {
+        logEvent(`Dataverse ${method} ${endpoint}: authentication failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
       let response: HttpResponse;
       try {
         response = await fetch(url, {
@@ -72,8 +81,10 @@ export class DataverseClient {
         });
       } catch (err) {
         const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+        logEvent(`Dataverse ${method} ${endpoint}: network error${cause?.code ? ` (${cause.code})` : ""}`);
         throw new UserError(`Couldn't reach ${new URL(url).host}${cause?.code ? ` (${cause.code})` : ""}. Check the org URL and your network connection.`);
       }
+      logEvent(`Dataverse ${method} ${endpoint}: HTTP ${response.status} (${Date.now() - started} ms)`);
       if (response.ok) return response;
       if (response.status === 401 && !freshToken) {
         freshToken = true;

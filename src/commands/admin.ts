@@ -99,7 +99,6 @@ export function registerAdminCommands(
             s.managed ? "Managed (read-only)" : "Unmanaged",
             s.publisher,
             s.version && `version ${s.version}`,
-            s.uniqueName === "Default" ? "contains every customization in the org, so it's slow to pull" : "",
           ].filter(Boolean).join(", "),
           solution: s,
         })),
@@ -111,19 +110,11 @@ export function registerAdminCommands(
       client.save();
       tree.refresh();
       const names = picks.map((p: { solution: { uniqueName: string } }) => p.solution.uniqueName).join(", ");
-      const choice = await vscode.window.showInformationMessage(`Added ${names} to ${client.name}.`, "Pull Now");
-      if (choice) await vscode.commands.executeCommand("lantern.pull", client);
-    }),
-    r("lantern.solutions.addLocal", (node: SolutionNode) => {
-      node.client.reload();
-      if (!node.client.config.solutions.some((s) => s.toLowerCase() === node.unique.toLowerCase())) node.client.config.solutions.push(node.unique);
-      node.client.save();
-      tree.refresh();
+      void vscode.window.showInformationMessage(`Added ${names} to ${client.name}.`);
     }),
     r("lantern.solutions.remove", async (node: SolutionNode) => {
-      const keep = node.folder ? " Its unpacked folder stays where it is." : "";
       const ok = await vscode.window.showWarningMessage(
-        `Remove ${node.unique} from ${node.client.name}? Pull will stop syncing it.${keep}`,
+        `Remove ${node.unique} from ${node.client.name}'s solution list?`,
         { modal: true },
         "Remove"
       );
@@ -132,9 +123,6 @@ export function registerAdminCommands(
       node.client.config.solutions = node.client.config.solutions.filter((s) => s.toLowerCase() !== node.unique.toLowerCase());
       node.client.save();
       tree.refresh();
-    }),
-    r("lantern.solutions.reveal", async (node: SolutionNode) => {
-      if (node.folder) await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(node.folder));
     }),
     r("lantern.webResources.open", async (node: WebResourceNode) => {
       const local = findWebResourceFile(node.client, node.resource.name);
@@ -148,7 +136,7 @@ export function registerAdminCommands(
       const uri = vscode.Uri.from({ scheme: DataverseContentProvider.scheme, path: `/${node.client.name}/${name}` });
       remote.set(uri, Buffer.from(wr.content, "base64").toString("utf8"));
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true });
-      vscode.window.setStatusBarMessage(`$(cloud) ${wr.name} is the Dataverse copy (read-only). Pull ${node.unique} to edit it locally.`, 6000);
+      vscode.window.setStatusBarMessage(`$(cloud) ${wr.name} is the Dataverse copy (read-only).`, 6000);
     }),
 
     // ---------- accounts ----------

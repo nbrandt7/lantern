@@ -6,11 +6,15 @@ All notable changes to Lantern for Dataverse are listed here, newest first.
 
 ### Changed
 
+- Solutions in the tenant tree come only from the configured solution names. Solution pull, its review panel, automatic local folder matching, and Pack and Import from Your Files have been removed.
+
 - Internal storage mode ignores local configuration files and requires explicit client initialization. Switching storage modes does not migrate or delete settings; folder mode uses `.lantern/config.json` independently.
 
 - Local client settings use only `.lantern/config.json`. Root-level `client.json`, `config.json`, and legacy `xdt.json` are no longer discovered or migrated as client settings.
 
 ### Added
+
+- Daily logs in the user's `~/.lantern/log` folder capture Lantern output, errors, search activity, Dataverse request outcomes, and process exit status.
 
 - **Power Automate flows** under each solution: browse cloud flows in the active environment with their status, then click to open the designer in VS Code's Integrated Browser. Requires a desktop VS Code build with Integrated Browser support; portal sign-in is separate from Dataverse sign-in.
 

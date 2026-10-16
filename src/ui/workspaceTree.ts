@@ -8,7 +8,7 @@ import { HistoryEntry, QueryHistory } from "../core/history";
 import { findPagesSites, findPcfControls, PcfControl } from "../commands/pcfPages";
 import * as fs from "fs";
 import { MetadataService, TableMeta } from "../core/metadata";
-import { findPluginProjects, findSolutionFolders, PluginProject, solutionNameOf } from "../core/solutions";
+import { findPluginProjects, PluginProject } from "../core/solutions";
 import { RegisteredAssembly } from "../core/pluginRegistration";
 import { assembliesWithoutProjects, ClassStatus, forgetOrgPlugins, orgPlugins, projectStatus } from "../core/pluginStatus";
 import { projectPluginClasses } from "../core/csharp";
@@ -29,8 +29,8 @@ export type LocalNode =
   | { kind: "savedQuery"; client: Client; file: string }
   | { kind: "recentQueries"; client: Client }
   | { kind: "recentQuery"; client: Client; entry: HistoryEntry }
-  /** A solution: listed in .lantern/config.json, pulled into the folder, or both. */
-  | { kind: "solution"; client: Client; unique: string; folder?: string; configured: boolean }
+  /** A solution listed for the active tenant. */
+  | { kind: "solution"; client: Client; unique: string }
   | { kind: "solutionPart"; client: Client; unique: string; part: "tables" | "webresources" | "flows" }
   | { kind: "flow"; client: Client; unique: string; flow: SolutionFlow }
   | { kind: "webResource"; client: Client; unique: string; resource: SolutionWebResource }
@@ -393,24 +393,14 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
     this.changed.fire(undefined);
   }
 
-  /**
-   * The client's solutions: the ones listed in .lantern/config.json (pulled or not), then any
-   * unpacked solution folders that aren't listed yet.
-   */
+  /** The solutions listed for the active tenant. */
   private solutions(client: Client): TreeNode[] {
-    const folders = findSolutionFolders(client.dir).map((folder) => ({ folder, unique: solutionNameOf(folder) }));
     const listed: TreeNode[] = client.config.solutions.map((unique) => ({
       kind: "solution",
       client,
       unique,
-      configured: true,
-      folder: folders.find((f) => f.unique.toLowerCase() === unique.toLowerCase())?.folder,
     }));
-    const extra: TreeNode[] = folders
-      .filter((f) => !client.config.solutions.some((u) => u.toLowerCase() === f.unique.toLowerCase()))
-      .map((f) => ({ kind: "solution", client, unique: f.unique, folder: f.folder, configured: false }));
-    const all = [...listed, ...extra];
-    if (all.length) return all;
+    if (listed.length) return listed;
     return [{
       kind: "hint",
       client,
@@ -537,16 +527,9 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
       }
       case "solution": {
         const item = new vscode.TreeItem(node.unique, node.client.config.org ? C.Collapsed : C.None);
-        const state = node.folder ? "pulled" : node.configured ? "not pulled yet" : "";
-        item.description = [state, node.configured ? "" : "not in .lantern/config.json"].filter(Boolean).join(", ");
-        item.iconPath = new vscode.ThemeIcon("package", node.configured ? undefined : new vscode.ThemeColor("disabledForeground"));
-        item.contextValue = `solution.${node.configured ? "configured" : "local"}${node.folder ? ".pulled" : ""}`;
-        item.tooltip = [
-          node.unique,
-          node.folder ? `Unpacked in ${path.relative(node.client.dir, node.folder) || "."}` : "Not in this folder yet. Pull to bring it down.",
-          node.configured ? "" : 'Not listed in .lantern/config.json "solutions", so Pull won\'t sync it.',
-        ].filter(Boolean).join("\n");
-        if (node.folder) item.resourceUri = vscode.Uri.file(node.folder);
+        item.iconPath = new vscode.ThemeIcon("package");
+        item.contextValue = "solution";
+        item.tooltip = node.unique;
         return item;
       }
       case "pcfControl": {
@@ -610,7 +593,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         item.description = r.displayName !== r.name ? r.displayName : undefined;
         item.iconPath = new vscode.ThemeIcon([1, 2, 4, 9, 11, 12].includes(r.type) ? "file-code" : r.type === 3 ? "symbol-method" : "file-media");
         item.contextValue = "webResource";
-        item.tooltip = `${r.name}\nClick to open your local copy, or the version in Dataverse if you haven't pulled it.`;
+        item.tooltip = `${r.name}\nClick to open a local copy when available, or the Dataverse version.`;
         item.command = { command: "lantern.webResources.open", title: "Open", arguments: [node] };
         return item;
       }

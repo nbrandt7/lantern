@@ -12,12 +12,22 @@ export interface PowerAutomateFlowSearchResult {
 export async function searchPowerAutomateFlows(
   client: Client,
   query: string,
-  dv: DataverseClient
+  dv: DataverseClient,
+  solutionUniqueName?: string
 ): Promise<PowerAutomateFlowSearchResult[]> {
   const escaped = query.replace(/'/g, "''");
   const filter = `category eq 5 and type eq 1 and contains(name,'${escaped}')`;
   const results: PowerAutomateFlowSearchResult[] = [];
   if (!client.config.org) return results;
+  let targetSolutionId: string | undefined;
+  if (solutionUniqueName) {
+    const solutionFilter = `uniquename eq '${solutionUniqueName.replace(/'/g, "''")}'`;
+    const matches = await dv.getAll<{ solutionid: string }>(
+      `solutions?$select=solutionid&$filter=${encodeURIComponent(solutionFilter)}`
+    );
+    if (!matches.length) throw new Error(`Solution "${solutionUniqueName}" was not found in the selected environment.`);
+    targetSolutionId = matches[0].solutionid.toLowerCase();
+  }
   {
       const rows = await dv.getAll<{
         workflowid: string;
@@ -27,6 +37,7 @@ export async function searchPowerAutomateFlows(
       }>(`workflows?$select=workflowid,name,description,statecode&$filter=${encodeURIComponent(filter)}`);
       const ids = [...new Set(rows.map((row) => row.workflowid.toLowerCase()))];
       const memberships = new Map<string, string[]>();
+      const matchingSolutionFlows = new Set<string>();
       for (let i = 0; i < ids.length; i += 40) {
         const chunk = ids.slice(i, i + 40);
         const componentFilter = `componenttype eq 29 and (${chunk.map((id) => `objectid eq ${id}`).join(" or ")})`;
@@ -41,12 +52,14 @@ export async function searchPowerAutomateFlows(
             `solutions?$select=solutionid,friendlyname,uniquename&$filter=${encodeURIComponent(solutionFilter)}`
           );
           for (const solution of solutionRows) {
+            if (solution.uniquename.toLowerCase() === "default") continue;
             solutions.set(solution.solutionid.toLowerCase(), solution.friendlyname || solution.uniquename);
           }
         }
         for (const component of components) {
           const flowId = component.objectid.toLowerCase();
           const solutionId = component._solutionid_value.toLowerCase();
+          if (solutionId === targetSolutionId) matchingSolutionFlows.add(flowId);
           const name = solutions.get(solutionId);
           if (!name) continue;
           const flowSolutions = memberships.get(flowId) ?? [];
@@ -54,7 +67,7 @@ export async function searchPowerAutomateFlows(
           memberships.set(flowId, flowSolutions);
         }
       }
-      results.push(...rows.map((row) => ({
+      results.push(...rows.filter((row) => !targetSolutionId || matchingSolutionFlows.has(row.workflowid.toLowerCase())).map((row) => ({
         client,
         flow: { id: row.workflowid, name: row.name, description: row.description ?? "", state: row.statecode },
         solutions: (memberships.get(row.workflowid.toLowerCase()) ?? []).sort((a, b) => a.localeCompare(b)),

@@ -600,51 +600,6 @@ const step = async (name, fn) => {
     assert.strictEqual(tree.getTreeItem(beta).contextValue, "client");
   });
 
-  const reviewView = S.treeViews["lantern.review"];
-  const review = reviewView.treeDataProvider;
-  await step("pull stages Dataverse, lists differences, skips git-ignored build output", async () => {
-    fs.writeFileSync(path.join(wr, "account.js"), "// my uncommitted edit\n");
-    await run("pull", { client: require("../out/core/clients.js").readClient(acme) });
-    assert.match(cliLog(), /pac auth create --name acmedynamics --environment https:\/\/acme\.crm\.dynamics\.com/);
-    assert.match(cliLog(), /pac solution sync --solution-folder .*dataverse-pull-acme-dynamics-.*AcmeCore/);
-    assert.strictEqual(S.context["lantern.reviewActive"], true);
-    const changes = review.getChildren();
-    const names = changes.map((c) => `${c.kind}:${path.basename(c.display)}`).sort();
-    assert.deepStrictEqual(names, ["changed:Solution.xml", "changed:account.js", "new:contact.js"]);
-    assert.strictEqual(review.session.ignoredCount, 1, "the DLL is git-ignored");
-    const account = changes.find((c) => c.display.endsWith("account.js"));
-    assert.strictEqual(account.edited, true);
-    assert.match(reviewView.message, /3 difference/);
-    assert.strictEqual(fs.readFileSync(path.join(wr, "account.js"), "utf8"), "// my uncommitted edit\n", "nothing applied yet");
-  });
-
-  await step("review: diff opens, choices apply, backups made, temp cleaned", async () => {
-    const changes = review.getChildren();
-    const account = changes.find((c) => c.display.endsWith("account.js"));
-    const solutionXml = changes.find((c) => c.display.endsWith("Solution.xml"));
-    await run("review.open", solutionXml);
-    assert.ok(S.executed.some((e) => e[0] === "vscode.diff" && e[3].includes("Dataverse ↔ Yours")));
-    await run("review.open", account);
-    const merge = S.executed.find((e) => e[0] === "_open.mergeEditor");
-    assert.ok(merge, "edited file with a committed base opens the 3-way merge editor");
-    assert.strictEqual(merge[1].output.fsPath, account.localPath);
-    assert.strictEqual(fs.readFileSync(merge[1].base.fsPath, "utf8"), "// original\n");
-    assert.strictEqual(account.choice, "keep");
-    await run("review.takeDataverse", account);
-    await run("review.takeDataverse", solutionXml);
-    await run("review.keepAllPending");
-    assert.strictEqual(review.session.pendingCount, 0);
-    const staging = review.session.stagingDir;
-    await run("review.apply");
-    assert.strictEqual(fs.readFileSync(path.join(wr, "account.js"), "utf8"), "// dataverse version\n");
-    assert.ok(!fs.existsSync(path.join(wr, "contact.js")), "kept mine = don't add it");
-    assert.ok(fs.existsSync(path.join(acme, ".pull-backup/AcmeCore/src/WebResources/acme_/scripts/account.js")));
-    assert.ok(!fs.existsSync(path.join(wr, "AcmePlugins.dll")));
-    assert.ok(!fs.existsSync(staging), "staging folder removed");
-    assert.strictEqual(S.context["lantern.reviewActive"], false);
-    assert.match(g(["status", "--porcelain"], acme), /M AcmeCore\/src\/WebResources\/acme_\/scripts\/account\.js/);
-  });
-
   await step("push web resource: find, update, publish via Web API", async () => {
     requests.length = 0;
     await run("pushWebResource", vscode.Uri.file(path.join(wr, "account.js")));
@@ -1139,7 +1094,7 @@ const step = async (name, fn) => {
     const solutionsGroup = (await kids(acmeClient)).find((n) => n.kind === "group" && n.group === "solutions");
     const [acmeCore] = await kids(solutionsGroup);
     assert.strictEqual(metaTree.getTreeItem(acmeCore).label, "AcmeCore");
-    assert.strictEqual(metaTree.getTreeItem(acmeCore).description, "pulled");
+    assert.strictEqual(metaTree.getTreeItem(acmeCore).contextValue, "solution");
     const [solutionTables, solutionWebResources] = await kids(acmeCore);
     assert.strictEqual(metaTree.getTreeItem(solutionWebResources).label, "Web resources");
     const tableKids = await kids(solutionTables);
@@ -1908,7 +1863,7 @@ const step = async (name, fn) => {
     delete S.installedExtensions;
   });
 
-  await step("solutions: add from the org, open their web resources, list unlisted folders, remove", async () => {
+  await step("solutions: add from the org, open their web resources, remove", async () => {
     const cfgPath = path.join(acme, ".lantern/config.json");
     const cfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     let offered;
@@ -1919,7 +1874,6 @@ const step = async (name, fn) => {
     S.messageAnswers.push(undefined);
     await run("solutions.add", { client: acmeClient() });
     assert.ok(!offered.some((i) => i.description === "AcmeCore"), "solutions already added aren't offered again");
-    assert.match(offered.find((i) => i.description === "Default").detail, /slow to pull/);
     assert.match(offered.find((i) => i.description === "msdynce_Sales").detail, /^Managed \(read-only\), Microsoft, version 9\.0/);
     assert.strictEqual(offered[offered.length - 1].description, "msdynce_Sales", "managed solutions list last");
     assert.deepStrictEqual(cfg().solutions, ["AcmeCore", "Cr7e97c"]);
@@ -1929,8 +1883,8 @@ const step = async (name, fn) => {
     const group = (await kids(clientNode)).find((n) => n.kind === "group" && n.group === "solutions");
     assert.strictEqual(metaTree.getTreeItem(group).contextValue, "group.solutions.connected", "the + button shows on Solutions");
     const [core, cr] = await kids(group);
-    assert.deepStrictEqual([metaTree.getTreeItem(core).description, metaTree.getTreeItem(cr).description], ["pulled", "not pulled yet"]);
-    assert.strictEqual(metaTree.getTreeItem(core).contextValue, "solution.configured.pulled");
+    assert.deepStrictEqual([metaTree.getTreeItem(core).description, metaTree.getTreeItem(cr).description], [undefined, undefined]);
+    assert.strictEqual(metaTree.getTreeItem(core).contextValue, "solution");
 
     const [, webResourcesNode] = await kids(core);
     const resources = await kids(webResourcesNode);
@@ -1940,16 +1894,13 @@ const step = async (name, fn) => {
     await run("webResources.open", resources[0]);
     assert.strictEqual(S.lastShow.target.uri.scheme, "dataverse-wr", "no local copy: opens the Dataverse version");
 
-    // An unpacked solution that isn't in .lantern/config.json yet.
+    // An unpacked solution that isn't in .lantern/config.json doesn't enter the tree.
     const other = path.join(acme, "OtherSol");
     fs.mkdirSync(path.join(other, "Other"), { recursive: true });
     fs.writeFileSync(path.join(other, "Other/Solution.xml"), "<UniqueName>OtherSol</UniqueName>");
-    const third = (await kids(group)).find((n) => n.unique === "OtherSol");
-    assert.strictEqual(metaTree.getTreeItem(third).description, "pulled, not in .lantern/config.json");
-    await run("solutions.addLocal", third);
-    assert.deepStrictEqual(cfg().solutions, ["AcmeCore", "Cr7e97c", "OtherSol"]);
+    assert.ok(!(await kids(group)).some((n) => n.unique === "OtherSol"));
 
-    for (const name of ["Cr7e97c", "OtherSol"]) {
+    for (const name of ["Cr7e97c"]) {
       const node = (await kids(group)).find((n) => n.unique === name);
       S.messageAnswers.push("Remove");
       await run("solutions.remove", node);
@@ -2553,36 +2504,6 @@ const step = async (name, fn) => {
     S.activeTextEditor = undefined;
   });
 
-  await step("review: keep mine for a selection, take the rest, decline an apply with pending files, cancel", async () => {
-    fs.writeFileSync(path.join(wr, "account.js"), "// mine again\n");
-    fs.rmSync(path.join(wr, "contact.js"), { force: true });
-    await run("pull", { client: acmeClient() });
-    const changes = review.getChildren();
-    assert.deepStrictEqual(changes.map((c) => `${c.kind}:${path.basename(c.display)}`).sort(), ["changed:account.js", "new:contact.js"]);
-    const account = changes.find((c) => c.display.endsWith("account.js"));
-    const contact = changes.find((c) => c.display.endsWith("contact.js"));
-    assert.deepStrictEqual([account.choice, contact.choice], ["pending", "pending"]);
-    S.messageAnswers.push(undefined);
-    await run("review.apply");
-    assert.match(S.messages.filter((m) => m[0] === "warn").pop()[1], /2 file\(s\) are still undecided/);
-    assert.ok(review.session, "declining the undecided-files warning keeps the review open");
-    assert.ok(!fs.existsSync(path.join(wr, "contact.js")), "and applies nothing");
-    await run("review.keepMine", account, [account, contact]);
-    assert.deepStrictEqual([account.choice, contact.choice], ["keep", "keep"], "a multi-selection is set together");
-    contact.choice = "pending";
-    await run("review.takeAllPending");
-    assert.strictEqual(review.session.pendingCount, 0);
-    assert.deepStrictEqual([account.choice, contact.choice], ["keep", "dataverse"], "take-all only touches undecided files");
-    const staging = review.session.stagingDir;
-    await run("review.cancel");
-    assert.strictEqual(review.session, undefined);
-    assert.ok(!fs.existsSync(staging), "cancelling removes the staged copy");
-    assert.strictEqual(S.context["lantern.reviewActive"], false);
-    assert.strictEqual(fs.readFileSync(path.join(wr, "account.js"), "utf8"), "// mine again\n", "cancel applies nothing");
-    assert.ok(!fs.existsSync(path.join(wr, "contact.js")), "nor adds anything");
-    assert.match(lastMessage()[1], /Review discarded\. No Dataverse versions were applied\./);
-  });
-
   await step("table commands: find from a client's row, browser links, copy menu, insert getControl, traces refresh", async () => {
     // Find Table searches the client whose row was clicked, even with another client's file open.
     const allTables = await sectionOf("acme-dynamics", "tables");
@@ -2655,10 +2576,6 @@ const step = async (name, fn) => {
     await run("results.copyAs", 0);
     assert.match(S.clipboard, /new FetchExpression\(fetchXml\)/);
 
-    await run("solutions.reveal", { client: acmeClient(), unique: "AcmeCore", folder: path.join(acme, "AcmeCore") });
-    const reveal = S.executed.filter((e) => e[0] === "revealInExplorer").pop();
-    assert.strictEqual(reveal[1].fsPath, path.join(acme, "AcmeCore"));
-
     const tsDir = path.join(acme, "ts");
     fs.mkdirSync(tsDir, { recursive: true });
     fs.writeFileSync(path.join(tsDir, "tsconfig.json"), JSON.stringify({ compilerOptions: { rootDir: ".", outDir: "../AcmeCore/src/WebResources" } }));
@@ -2711,16 +2628,6 @@ const step = async (name, fn) => {
     assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, "utf8")).appId, "");
     fs.writeFileSync(cfgPath, original);
     require("../out/ui/auth.js").clearTokenCache();
-  });
-
-  await step("solutions: pack your files and import them", async () => {
-    fs.writeFileSync(logFile, "");
-    S.quickPickAnswers.push("Unmanaged");
-    await run("solutions.packAndImport", { client: acmeClient(), unique: "AcmeCore", folder: path.join(acme, "AcmeCore") });
-    const log = cliLog();
-    assert.match(log, /pac solution pack --zipfile .*AcmeCore\.zip --folder .*AcmeCore[\\/]src --packagetype Unmanaged/);
-    assert.match(log, /pac solution import --path .*AcmeCore\.zip --environment https:\/\/acme\.crm\.dynamics\.com --publish-changes/);
-    assert.match(lastMessage()[1], /Packed AcmeCore from your files and imported it/);
   });
 
   await step("scaffolding: plug-in project, plug-in and workflow classes, script unit tests", async () => {
@@ -3075,11 +2982,6 @@ const step = async (name, fn) => {
   await step("test connection uses WhoAmI", async () => {
     await run("testConnection", { client: require("../out/core/clients.js").readClient(acme) });
     assert.match(lastMessage()[1], /Connected to acme\.crm\.dynamics\.com/);
-  });
-
-  await step("pull without an org explains what to set", async () => {
-    await run("pull", { client: require("../out/core/clients.js").readClient(path.join(root, "beta")) });
-    assert.match(lastMessage()[1], /Set "org"/);
   });
 
   await step("internal mode: startup and new folders wait for explicit initialization", async () => {

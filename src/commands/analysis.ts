@@ -170,7 +170,7 @@ async function functionTarget(
     if (node.kind === "handler") name = node.handler.functionName;
     file = findWebResourceFile(node.client, library);
     if (!file) {
-      void vscode.window.showInformationMessage(`${library} isn't in the ${node.client.name} folder. Pull its solution to analyze its code.`);
+      void vscode.window.showInformationMessage(`${library} isn't in the ${node.client.name} folder. Add a local copy to analyze its code.`);
       return undefined;
     }
   } else if (arg && typeof (arg as vscode.Uri).fsPath === "string") {
@@ -311,7 +311,7 @@ export function outlineMarkdown(text: string, file: string, library: string | un
   if (unused.length) {
     lines.push("## Not registered or called here", "", ...unused.map((n) => `- ${n}`), "");
     lines.push(
-      `Nothing on this table's forms${ribbon ? " or in the pulled solutions' command bar" : ""} runs these, and nothing in this file calls them. They may still be called from another library or a solution you haven't pulled, so check before deleting.`,
+      `Nothing on this table's forms${ribbon ? " or in the local solutions' command bar" : ""} runs these, and nothing in this file calls them. They may still be called from another library or a solution that isn't available locally, so check before deleting.`,
       ""
     );
   }

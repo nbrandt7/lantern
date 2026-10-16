@@ -16,7 +16,7 @@ const CACHE_MS = 30_000;
 
 /**
  * JavaScript functions the command bar (ribbon) calls, from the RibbonDiffXml in the
- * client's pulled solutions, by library name (lowercase). These run without any form
+ * client's local solution folders, by library name (lowercase). These run without any form
  * event handler, so they're invisible to form-based checks. Cached briefly, since live
  * warnings ask on every edit.
  */

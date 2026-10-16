@@ -38,10 +38,6 @@ switch (`${args[0]} ${args[1]}`) {
     fs.writeFileSync(path.join(out, "results.zip"), writeZip([{ name: "AcmeCore.sarif", data: Buffer.from(JSON.stringify(sarif)) }]));
     break;
   }
-  case "solution pack": {
-    write(args[args.indexOf("--zipfile") + 1], `packed ${args[args.indexOf("--folder") + 1]}`);
-    break;
-  }
   case "plugin init": {
     const out = args[args.indexOf("--outputDirectory") + 1];
     const name = path.basename(out);

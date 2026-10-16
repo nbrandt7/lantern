@@ -4,14 +4,13 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { CheckerIssue, readCheckerOutput } from "../core/checker";
 import { Client } from "../core/clients";
-import { findFiles, toPosix } from "../core/files";
 import { findWebResourceFile } from "../core/handlers";
 import { ensureAuth, solutionCheck, solutionExport, solutionImport } from "../core/pac";
 import { dataverseFor } from "../ui/auth";
 import { confirmProtected, reportError, resolveClient, withProgress } from "../ui/context";
 import { TableDocProvider } from "./metadata";
 
-type SolutionArg = { client: Client; unique: string; folder?: string };
+type SolutionArg = { client: Client; unique: string };
 
 export function registerSolutionOps(docs: TableDocProvider, checker: vscode.DiagnosticCollection): vscode.Disposable[] {
   const r = (id: string, fn: (...args: any[]) => unknown) =>
@@ -187,13 +186,9 @@ async function importZip(target: Client, zip: string): Promise<void> {
 function showCheckerProblems(node: SolutionArg, issues: CheckerIssue[], checker: vscode.DiagnosticCollection): void {
   checker.clear();
   const byFile = new Map<string, vscode.Diagnostic[]>();
-  const local = node.folder ? findFiles(node.folder, () => true) : [];
   for (const issue of issues) {
     if (!issue.artifact) continue;
-    const want = issue.artifact.toLowerCase();
-    const file =
-      local.find((f) => toPosix(f).toLowerCase().endsWith(`/${want}`)) ??
-      findWebResourceFile(node.client, issue.artifact.replace(/^WebResources\//i, ""));
+    const file = findWebResourceFile(node.client, issue.artifact.replace(/^WebResources\//i, ""));
     if (!file) continue;
     const line = Math.max(0, (issue.line ?? 1) - 1);
     const d = new vscode.Diagnostic(
@@ -220,6 +215,6 @@ export function checkerMarkdown(node: { client: Client; unique: string }, issues
     }
     lines.push("");
   }
-  lines.push("Issues in files you've pulled also appear in the Problems panel.", "");
+  lines.push("Issues matching local web resource files also appear in the Problems panel.", "");
   return lines.join("\n");
 }

@@ -78,7 +78,7 @@ export async function goToHandler(client: Client, libraryName: string, functionN
     doc = await vscode.workspace.openTextDocument(vscode.Uri.file(local));
   } else {
     const choice = await vscode.window.showInformationMessage(
-      `${libraryName} isn't in the ${client.name} folder. Pull the solution that contains it to edit it locally.`,
+      `${libraryName} isn't in the ${client.name} folder. Add a local copy to edit it locally.`,
       "Open from Dataverse"
     );
     if (choice !== "Open from Dataverse") return;

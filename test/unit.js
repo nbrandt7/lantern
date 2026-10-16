@@ -920,7 +920,7 @@ const tmp = () => {
 
   // ---------- scaffolding ----------
   const scaffold = out("commands/scaffold.js");
-  await test("scaffolding: templates per kind, PluginBase when the project has it, namespaces, packable folders", () => {
+  await test("scaffolding: templates per kind, PluginBase when the project has it, namespaces", () => {
     assert.match(scaffold.classTemplate("plugin", "Ns", "P", false), /public class P : IPlugin[\s\S]*TryGetValue\("Target"/);
     assert.match(scaffold.classTemplate("plugin", "Ns", "P", true), /public class P : PluginBase[\s\S]*base\(typeof\(P\)\)/);
     assert.match(scaffold.classTemplate("customapi", "Ns", "Q", false), /OutputParameters/);
@@ -931,10 +931,6 @@ const tmp = () => {
     assert.strictEqual(scaffold.projectNamespace(proj), "Acme.Asm");
     fs.writeFileSync(proj, "<Project><PropertyGroup><RootNamespace>Acme.Root</RootNamespace><AssemblyName>X</AssemblyName></PropertyGroup></Project>");
     assert.strictEqual(scaffold.projectNamespace(proj), "Acme.Root");
-    fs.mkdirSync(path.join(dir, "Sol", "src", "Other"), { recursive: true });
-    fs.writeFileSync(path.join(dir, "Sol", "src", "Other", "Solution.xml"), "<x/>");
-    assert.strictEqual(scaffold.packableFolder(path.join(dir, "Sol")), path.join(dir, "Sol", "src"));
-    assert.strictEqual(scaffold.packableFolder(path.join(dir, "Nope")), undefined);
   });
 
   // ---------- pac helpers and app registrations ----------

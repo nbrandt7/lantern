@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "child_process";
+import * as path from "path";
+import { logEvent } from "./logger";
 
 export interface Cancellation {
   isCancellationRequested: boolean;
@@ -29,6 +31,9 @@ const isWindows = process.platform === "win32";
  */
 export function run(cmd: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve) => {
+    const started = Date.now();
+    const tool = path.basename(cmd);
+    logEvent(`Process started: ${tool}`);
     let stdout = "";
     let stderr = "";
     const child = isWindows
@@ -50,9 +55,11 @@ export function run(cmd: string, args: string[], options: RunOptions = {}): Prom
     else child.stdin?.end();
 
     child.on("error", (err: NodeJS.ErrnoException) => {
+      logEvent(`Process failed: ${tool} (${err.code ?? err.message}, ${Date.now() - started} ms)`);
       resolve({ code: -1, stdout, stderr: stderr || err.message, missing: err.code === "ENOENT" });
     });
     child.on("close", (code) => {
+      logEvent(`Process finished: ${tool} (exit ${code ?? -1}, ${Date.now() - started} ms)`);
       const missing = isWindows && code !== 0 && /is not recognized as an internal or external command/i.test(stderr);
       resolve({ code: code ?? -1, stdout, stderr, missing });
     });
