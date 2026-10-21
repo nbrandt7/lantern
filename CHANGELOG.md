@@ -6,11 +6,27 @@ All notable changes to Lantern for Dataverse are listed here, newest first.
 
 ### Changed
 
+- App searches now require a trailing `e` to edit or `r` to run. The selected action determines the app URL, with distinct handling for model-driven, canvas, and code apps.
+
+- Columns and forms under a solution's table show only components included in that solution, including tables configured to include all objects. All tables remains environment-wide.
+
+- The Lantern sidebar has separate Solutions and Environment panes. Org-wide items and their existing actions now appear under Environment.
+
+- Solutions in the tenant tree come only from the configured solution names. Solution pull, its review panel, automatic local folder matching, and Pack and Import from Your Files have been removed.
+
 - Internal storage mode ignores local configuration files and requires explicit client initialization. Switching storage modes does not migrate or delete settings; folder mode uses `.lantern/config.json` independently.
 
 - Local client settings use only `.lantern/config.json`. Root-level `client.json`, `config.json`, and legacy `xdt.json` are no longer discovered or migrated as client settings.
 
 ### Added
+
+- Search now supports `t` tables, `br` business rules, and `a` model-driven, canvas, and code apps. Prefix a component search with `s <solution unique name>` to limit results and open the selection in that solution.
+
+- Lantern checks the selected Dataverse connection when it starts or the tenant or environment changes, prompting for sign-in before the first command when needed.
+
+- Search opens an exact solution unique name with `s <name>` or lists fuzzy solution matches for partial names.
+
+- Daily logs in the user's `~/.lantern/log` folder capture Lantern output, errors, search activity, Dataverse request outcomes, and process exit status.
 
 - **Power Automate flows** under each solution: browse cloud flows in the active environment with their status, then click to open the designer in VS Code's Integrated Browser. Requires a desktop VS Code build with Integrated Browser support; portal sign-in is separate from Dataverse sign-in.
 

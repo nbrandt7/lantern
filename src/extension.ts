@@ -5,7 +5,6 @@ import { languageForExtensionless } from "./core/solutions";
 import { configureFolder, initWorkspace, newClient, openClientConfig, openInBrowser } from "./commands/clients";
 import { generateEarlyBound, generateJsTypes } from "./commands/build";
 import { compareDeployed, getPluginSource, pushPlugin } from "./commands/plugins";
-import { pullCommand, registerReviewCommands } from "./commands/pull";
 import { compareWebResource, DataverseContentProvider, newFormScript, onSavePush, pushWebResources } from "./commands/webResources";
 import { clearTokenCache, dataverseFor } from "./ui/auth";
 import { WorkspaceTree } from "./ui/workspaceTree";
@@ -30,9 +29,8 @@ import { registerScaffolding } from "./commands/scaffold";
 import { registerPcfAndPages } from "./commands/pcfPages";
 import { registerCustomApisAndForms } from "./commands/customApi";
 import { registerCopilotTools } from "./ui/copilot";
-import { clientForPath, reportError, resolveClient, SECTION, settings, withProgress, workspaceRoots } from "./ui/context";
+import { clientForPath, reportError, resolveClient, SECTION, settings, withProgress, workspaceRoots, write } from "./ui/context";
 import { ClientStatusBar, DataverseCodeLens } from "./ui/editor";
-import { ReviewTree } from "./ui/review";
 import { Client } from "./core/clients";
 import { MetadataService } from "./core/metadata";
 import { registerMetadataCommands, TableDocProvider } from "./commands/metadata";
@@ -43,11 +41,17 @@ import { CellContext, ResultsView } from "./ui/results";
 import { editUserSettings } from "./commands/userSettings";
 import { openSearch } from "./commands/search";
 import { addTenantCommand, selectTenantCommand } from "./commands/tenants";
-import { configureTenantContext, importSavedTenants, removeTenant } from "./ui/tenantContext";
+import { activeTenant, configureTenantContext, importSavedTenants, removeTenant } from "./ui/tenantContext";
 import { registerTraceCommands, TraceDocProvider, TraceTree } from "./ui/traceTree";
+import { startFileLogging } from "./core/logger";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const review = new ReviewTree();
+  try {
+    const file = startFileLogging();
+    write(`Lantern log: ${file}\n`);
+  } catch (error) {
+    reportError(error);
+  }
   const statusBar = new ClientStatusBar();
   const contentProvider = new DataverseContentProvider();
 
@@ -78,14 +82,37 @@ export function activate(context: vscode.ExtensionContext): void {
   useQueryHistory(history, () => clients.refresh());
   const diagnostics = new ScriptDiagnostics(serviceFor);
   const checker = vscode.languages.createDiagnosticCollection("lantern-checker");
-  const clientsView = vscode.window.createTreeView("lantern.clients", { treeDataProvider: clients, showCollapseAll: true });
-  const reviewView = vscode.window.createTreeView("lantern.review", { treeDataProvider: review, canSelectMany: true });
-  review.attach(reviewView);
+  const clientsView = vscode.window.createTreeView("lantern.clients", { treeDataProvider: clients.forPane("solutions"), showCollapseAll: true });
+  const environmentView = vscode.window.createTreeView("lantern.environment", { treeDataProvider: clients.forPane("environment"), showCollapseAll: true });
 
+  let checkedConnection: string | undefined;
+  let connectionCheckVersion = 0;
+  const checkActiveConnection = (): void => {
+    const client = activeTenant();
+    if (!client?.config.org) { checkedConnection = undefined; connectionCheckVersion++; return; }
+    const key = [client.configFile, client.name, client.envName, client.config.org, client.config.tenant,
+      client.config.account, client.config.appId, settings().authMethod].join("|");
+    if (key === checkedConnection) return;
+    checkedConnection = key;
+    const version = ++connectionCheckVersion;
+    void dataverseFor(client).whoAmI().then(() => {
+      if (checkedConnection === key && version === connectionCheckVersion) clients.refresh();
+    }).catch((error: unknown) => {
+      if (checkedConnection !== key || version !== connectionCheckVersion) return;
+      const message = error instanceof Error ? error.message : String(error);
+      write(`Connection check for ${client.name} (${client.orgHost}): ${message}\n`);
+      if (/cancelled/i.test(message)) return;
+      if (/sign.in|account|token|secret|401|403|Azure CLI/i.test(message)) {
+        void vscode.window.showWarningMessage(`Lantern couldn't authenticate to ${client.orgHost}: ${message}`, "Sign In As…")
+          .then((choice) => { if (choice) void vscode.commands.executeCommand("lantern.signInAs", client); });
+      }
+    });
+  };
   const refreshAll = (): void => {
     clients.refresh();
     statusBar.update();
     codeLens.refresh();
+    checkActiveConnection();
   };
   /** After a plug-in push or download: plug-in projects, steps, and plug-in CodeLens all change. */
   const pluginsChanged = (): void => {
@@ -105,7 +132,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     clientsView,
-    reviewView,
+    environmentView,
     vscode.workspace.registerTextDocumentContentProvider(TableDocProvider.scheme, tableDocs),
     vscode.workspace.registerTextDocumentContentProvider(TraceDocProvider.scheme, traceDocs),
     vscode.languages.registerCompletionItemProvider({ language: "sql" }, new SqlCompletions(serviceFor), "."),
@@ -143,12 +170,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     // From a plug-in class's "N steps" CodeLens: show that class under Plug-ins > Projects, steps expanded.
     cmd("focusSteps", async (arg?: Client | { client?: Client; typeName?: string }) => {
-      await vscode.commands.executeCommand("lantern.clients.focus");
+      await vscode.commands.executeCommand("lantern.environment.focus");
       clients.reloadSections("steps");
       const client = arg instanceof Client ? arg : arg?.client;
       if (!client) return;
       const target = await clients.revealTarget(client, arg instanceof Client ? undefined : arg?.typeName);
-      if (target) await clientsView.reveal(target, { select: true, focus: true, expand: true });
+      if (target) await environmentView.reveal(target, { select: true, focus: true, expand: true });
     }),
     ...registerFetchInCode(),
     ...registerScaffolding(refreshAll),
@@ -211,9 +238,6 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("Cleared cached Dataverse tokens. Manage the Microsoft account itself from the Accounts menu.");
     }),
 
-    // Pull and review
-    cmd("pull", (arg) => pullCommand(review, arg, refreshAll)),
-    ...registerReviewCommands(review, refreshAll),
 
     // Web resources
     cmd("pushWebResource", (arg, selection) => pushWebResources(arg, selection)),
@@ -253,6 +277,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration(SECTION)) {
         if (e.affectsConfiguration(`${SECTION}.clientSettingsLocation`)) setUpClientSettingsStore(context);
         clearTokenCache();
+        checkedConnection = undefined;
         refreshAll();
       }
     })
@@ -263,6 +288,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   void noticeLegacyExtension();
   setUpClientSettingsStore(context);
+  checkActiveConnection();
   vscode.workspace.textDocuments.forEach((doc: vscode.TextDocument) => setExtensionlessLanguage(doc));
   statusBar.update();
   for (const doc of vscode.workspace.textDocuments) diagnostics.schedule(doc, 0);
@@ -305,7 +331,6 @@ async function clientActions(arg: unknown): Promise<void> {
   if (!client) return;
   const doc = vscode.window.activeTextEditor?.document;
   const items: Array<{ label: string; command: string; args: unknown[] }> = [
-    { label: "$(cloud-download) Pull from Dataverse", command: "pull", args: [client] },
   ];
   // Only offer the open file when it belongs to this client.
   if (doc && doc.uri.scheme === "file" && clientForPath(doc.uri.fsPath)?.dir === client.dir) {

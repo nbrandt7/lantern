@@ -6,11 +6,11 @@ import { scanAll } from "./context";
 export type MetaNode =
   | { kind: "client"; client: Client }
   | { kind: "tableGroup"; client: Client; group: "solution" | "all" }
-  | { kind: "table"; client: Client; table: TableMeta }
-  | { kind: "columns"; client: Client; table: TableMeta }
+  | { kind: "table"; client: Client; table: TableMeta; solution?: string }
+  | { kind: "columns"; client: Client; table: TableMeta; solution?: string }
   | { kind: "column"; client: Client; table: TableMeta; column: ColumnMeta }
   | { kind: "option"; column: ColumnMeta; value: number; label: string }
-  | { kind: "forms"; client: Client; table: TableMeta }
+  | { kind: "forms"; client: Client; table: TableMeta; solution?: string }
   | { kind: "form"; client: Client; table: TableMeta; form: FormMeta }
   | { kind: "events"; client: Client; form: FormMeta }
   | { kind: "event"; client: Client; event: EventMeta }
@@ -73,20 +73,43 @@ export class MetadataTree implements vscode.TreeDataProvider<MetaNode> {
       }
       case "table":
         return [
-          { kind: "columns", client: node.client, table: node.table },
-          { kind: "forms", client: node.client, table: node.table },
+          { kind: "columns", client: node.client, table: node.table, solution: node.solution },
+          { kind: "forms", client: node.client, table: node.table, solution: node.solution },
         ];
       case "columns": {
-        const columns = await this.serviceFor(node.client).columns(node.table.logicalName);
-        return columns
+        const svc = this.serviceFor(node.client);
+        const components = node.solution ? await svc.solutionTableComponents(node.solution) : undefined;
+        const includeAll = components?.allTables.includes(node.table.metadataId.toLowerCase());
+        if (components && !includeAll && !components.columns.length) {
+          return [{ kind: "message", text: "No columns in this solution", icon: "info" }];
+        }
+        let columns = await svc.columns(node.table.logicalName);
+        if (components && !includeAll) {
+          // Older metadata caches predate column component IDs.
+          if (columns.some((column) => !column.metadataId)) columns = await svc.columns(node.table.logicalName, { force: true });
+          const included = new Set(components.columns);
+          columns = columns.filter((column) => column.metadataId && included.has(column.metadataId.toLowerCase()));
+        }
+        const visible: MetaNode[] = columns
           .filter((column) => !column.attributeOf)
           .map((column) => ({ kind: "column", client: node.client, table: node.table, column }));
+        return visible.length ? visible : [{ kind: "message", text: "No columns in this solution", icon: "info" }];
       }
       case "column":
         return (node.column.options ?? []).map((o) => ({ kind: "option", column: node.column, value: o.value, label: o.label }));
       case "forms": {
-        const forms = await this.serviceFor(node.client).forms(node.table.logicalName);
-        if (!forms.length) return [{ kind: "message", text: "No active forms", icon: "info" }];
+        const svc = this.serviceFor(node.client);
+        const components = node.solution ? await svc.solutionTableComponents(node.solution) : undefined;
+        const includeAll = components?.allTables.includes(node.table.metadataId.toLowerCase());
+        if (components && !includeAll && !components.forms.length) {
+          return [{ kind: "message", text: "No forms in this solution", icon: "info" }];
+        }
+        let forms = await svc.forms(node.table.logicalName);
+        if (components && !includeAll) {
+          const included = new Set(components.forms);
+          forms = forms.filter((form) => included.has(form.id.toLowerCase()));
+        }
+        if (!forms.length) return [{ kind: "message", text: node.solution ? "No forms in this solution" : "No active forms", icon: "info" }];
         return forms.map((form) => ({ kind: "form", client: node.client, table: node.table, form }));
       }
       case "form": {

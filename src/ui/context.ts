@@ -7,6 +7,7 @@ import { isInside } from "../core/files";
 import { PacContext } from "../core/pac";
 import { Cancellation } from "../core/process";
 import { activeTenant } from "./tenantContext";
+import { appendLog, logEvent } from "../core/logger";
 
 export const SECTION = "lantern";
 
@@ -37,7 +38,10 @@ export function log(): vscode.OutputChannel {
   if (!output) output = vscode.window.createOutputChannel("Lantern");
   return output;
 }
-export const write = (text: string): void => log().append(text);
+export const write = (text: string): void => {
+  log().append(text);
+  appendLog(text);
+};
 
 /** The folders currently open in VS Code. */
 export function workspaceRoots(): string[] {
@@ -74,9 +78,10 @@ export async function withProgress<T>(
   task: (ctx: PacContext & { cancel: Cancellation }, progress: vscode.Progress<{ message?: string }>) => Promise<T>,
   options: { quiet?: boolean } = {}
 ): Promise<T | undefined> {
+  const started = Date.now();
   write(`\n=== ${title} (${new Date().toLocaleTimeString()}) ===\n`);
   try {
-    return await vscode.window.withProgress(
+    const result = await vscode.window.withProgress(
       {
         // Quiet tasks (push on save) show in the status bar instead of a notification.
         location: options.quiet ? vscode.ProgressLocation.Window : vscode.ProgressLocation.Notification,
@@ -86,6 +91,8 @@ export async function withProgress<T>(
       (progress: vscode.Progress<{ message?: string }>, token: vscode.CancellationToken) =>
         task({ pacPath: settings().pacPath, log: write, token, cancel: token, confirmProfileAccount, appSecret: (c: Client) => appSecret(c) }, progress)
     );
+    logEvent(`Task completed: ${title} (${Date.now() - started} ms)`);
+    return result;
   } catch (err) {
     reportError(err);
     return undefined;

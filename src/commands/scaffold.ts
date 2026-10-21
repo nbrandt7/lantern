@@ -1,13 +1,12 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { Client } from "../core/clients";
 import { findFiles } from "../core/files";
 import { outlineJs } from "../core/codeanalysis";
-import { ensureAuth, pluginInit, solutionImport, solutionPack } from "../core/pac";
+import { pluginInit } from "../core/pac";
 import { findPluginProjects, PluginProject } from "../core/solutions";
-import { confirmProtected, reportError, resolveClient, withProgress } from "../ui/context";
+import { reportError, resolveClient, withProgress } from "../ui/context";
 
 const r = (id: string, fn: (...args: any[]) => unknown) =>
   vscode.commands.registerCommand(id, async (...args: any[]) => {
@@ -115,14 +114,6 @@ ${body}
 `;
 }
 
-/** The unpacked folder pac packs: the one holding Other/Solution.xml. */
-export function packableFolder(solutionFolder: string): string | undefined {
-  for (const candidate of [path.join(solutionFolder, "src"), solutionFolder]) {
-    if (fs.existsSync(path.join(candidate, "Other", "Solution.xml"))) return candidate;
-  }
-  return undefined;
-}
-
 export function registerScaffolding(onChanged: () => void): vscode.Disposable[] {
   return [
     r("lantern.plugins.newProject", async (arg?: unknown) => {
@@ -191,43 +182,6 @@ export function registerScaffolding(onChanged: () => void): vscode.Disposable[] 
       const usesPluginBase = findFiles(projectDir, (n) => n === "PluginBase.cs").length > 0;
       fs.writeFileSync(file, classTemplate(kind.classKind, projectNamespace(csproj), name.trim(), usesPluginBase && kind.classKind !== "workflow"));
       await vscode.window.showTextDocument(vscode.Uri.file(file));
-    }),
-
-    r("lantern.solutions.packAndImport", async (node: { client: Client; unique: string; folder?: string }) => {
-      const src = node.folder ? packableFolder(node.folder) : undefined;
-      if (!src) {
-        void vscode.window.showWarningMessage(`${node.unique} isn't unpacked in this folder yet. Pull it first.`);
-        return;
-      }
-      const kind = await vscode.window.showQuickPick(
-        [
-          { label: "Unmanaged", managed: false },
-          { label: "Managed", description: "pac needs the managed files in the folder (from a managed export)", managed: true },
-        ],
-        { placeHolder: `Pack ${node.unique} from your files as…` }
-      );
-      if (!kind) return;
-      let target = node.client;
-      if (node.client.environments.length) {
-        const env = await vscode.window.showQuickPick(
-          node.client.environments.map((e) => ({ label: e.name, description: [e.org, e.protected ? "protected" : "", e.name === node.client.envName ? "current" : ""].filter(Boolean).join(", ") })),
-          { placeHolder: "Import into which environment?" }
-        );
-        if (!env) return;
-        target = node.client.withEnvironment(env.label);
-      }
-      if (!(await confirmProtected(target, `Import ${node.unique} from your files`))) return;
-      const zip = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lantern-pack-")), `${node.unique}.zip`);
-      const ok = await withProgress(`Packing ${node.unique} and importing into ${target.envName || target.orgHost}`, async (ctx, progress) => {
-        progress.report({ message: "packing..." });
-        await solutionPack(ctx, src, zip, kind.managed);
-        progress.report({ message: "importing..." });
-        await ensureAuth(ctx, target);
-        await solutionImport(ctx, target, zip);
-        return true;
-      });
-      fs.rmSync(path.dirname(zip), { recursive: true, force: true });
-      if (ok) void vscode.window.showInformationMessage(`Packed ${node.unique} from your files and imported it into ${target.envName || target.orgHost}.`);
     }),
 
     r("lantern.tests.setup", async (arg?: unknown) => {

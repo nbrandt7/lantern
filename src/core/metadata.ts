@@ -22,6 +22,8 @@ export interface OptionMeta {
 
 export interface ColumnMeta {
   logicalName: string;
+  /** Dataverse component ID, used to identify columns included in a solution. */
+  metadataId?: string;
   displayName: string;
   schemaName: string;
   /** Friendly type, e.g. "String", "Lookup", "Picklist". */
@@ -131,6 +133,7 @@ export async function fetchTables(dv: DataverseClient): Promise<TableMeta[]> {
 
 interface RawColumn {
   LogicalName: string;
+  MetadataId: string;
   SchemaName: string;
   DisplayName: Label;
   Description: Label;
@@ -160,7 +163,7 @@ export async function fetchColumns(dv: DataverseClient, table: string): Promise<
   const cast = (type: string) => `${base}/Microsoft.Dynamics.CRM.${type}`;
   const [rows, strings, lookups, ...optionSets] = await Promise.all([
     dv.getAll<RawColumn>(
-      `${base}?$select=LogicalName,SchemaName,DisplayName,Description,AttributeType,AttributeTypeName,RequiredLevel,IsCustomAttribute,AttributeOf,IsValidForRead`
+      `${base}?$select=LogicalName,MetadataId,SchemaName,DisplayName,Description,AttributeType,AttributeTypeName,RequiredLevel,IsCustomAttribute,AttributeOf,IsValidForRead`
     ),
     dv.getAll<{ LogicalName: string; MaxLength: number }>(`${cast("StringAttributeMetadata")}?$select=LogicalName,MaxLength`),
     dv.getAll<{ LogicalName: string; Targets: string[] }>(`${cast("LookupAttributeMetadata")}?$select=LogicalName,Targets`),
@@ -182,6 +185,7 @@ export async function fetchColumns(dv: DataverseClient, table: string): Promise<
   return rows
     .map((r) => ({
       logicalName: r.LogicalName,
+      metadataId: r.MetadataId,
       displayName: labelOf(r.DisplayName),
       schemaName: r.SchemaName,
       type: (r.AttributeTypeName?.Value ?? r.AttributeType).replace(/Type$/, ""),
@@ -228,6 +232,29 @@ export async function fetchSolutionTables(dv: DataverseClient, solutions: string
     }
   }
   return [...names].sort();
+}
+
+export interface SolutionTableComponents {
+  allTables: string[];
+  columns: string[];
+  forms: string[];
+}
+
+/** Component IDs for the selected solution; a table root may include all its subcomponents. */
+export async function fetchSolutionTableComponents(dv: DataverseClient, unique: string): Promise<SolutionTableComponents> {
+  const empty = { allTables: [], columns: [], forms: [] };
+  const found = await dv.getAll<{ solutionid: string }>(
+    `solutions?$select=solutionid&$filter=uniquename eq '${unique.replace(/'/g, "''")}'`
+  );
+  if (!found[0]) return empty;
+  const rows = await dv.getAll<{ objectid: string; componenttype: number; rootcomponentbehavior: number | null }>(
+    `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${found[0].solutionid} and (componenttype eq 1 or componenttype eq 2 or componenttype eq 60)`
+  );
+  return {
+    allTables: rows.filter((row) => row.componenttype === 1 && row.rootcomponentbehavior === 0).map((row) => row.objectid.toLowerCase()),
+    columns: rows.filter((row) => row.componenttype === 2).map((row) => row.objectid.toLowerCase()),
+    forms: rows.filter((row) => row.componenttype === 60).map((row) => row.objectid.toLowerCase()),
+  };
 }
 
 // ---------- FormXml ----------
@@ -422,6 +449,10 @@ export class MetadataService {
   solutionTables(solutions: string[], o: LoadOptions = {}): Promise<string[]> {
     const key = `solution-tables/${solutions.map((s) => s.toLowerCase()).sort().join("+") || "none"}`;
     return this.load(key, async (dv) => fetchSolutionTables(dv, solutions, await this.tables(o)), o);
+  }
+
+  solutionTableComponents(unique: string, o: LoadOptions = {}): Promise<SolutionTableComponents> {
+    return this.load(`solution-components/${unique.toLowerCase()}`, (dv) => fetchSolutionTableComponents(dv, unique), o);
   }
 
   /** What's already cached, without touching the network. */

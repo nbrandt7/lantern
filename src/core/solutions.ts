@@ -25,16 +25,6 @@ export function findSolutionFolders(dir: string): string[] {
   return found;
 }
 
-/** Unique name from Other/Solution.xml (directly or under src/), else the folder name. */
-export function solutionNameOf(folder: string): string {
-  for (const file of [path.join(folder, "Other", "Solution.xml"), path.join(folder, "src", "Other", "Solution.xml")]) {
-    if (!fs.existsSync(file)) continue;
-    const match = fs.readFileSync(file, "utf8").match(/<UniqueName>([^<]+)<\/UniqueName>/);
-    if (match) return match[1].trim();
-  }
-  return path.basename(folder);
-}
-
 // ---------- plug-ins ----------
 
 const SDK_REFERENCE = /Microsoft\.CrmSdk\.CoreAssemblies|Microsoft\.Xrm\.Sdk|Microsoft\.PowerPlatform\.Dataverse/;

@@ -1,7 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { run, runBuffer, RunOptions } from "./process";
-import { toPosix } from "./files";
+import { run, RunOptions } from "./process";
 import { UserError } from "./errors";
 
 export async function git(args: string[], cwd: string, options: RunOptions = {}): Promise<{ ok: boolean; out: string; err: string }> {
@@ -19,21 +18,6 @@ export async function currentBranch(dir: string): Promise<string> {
 export async function originUrl(dir: string): Promise<string> {
   const r = await git(["remote", "get-url", "origin"], dir);
   return r.ok ? r.out : "";
-}
-
-/** Committed (HEAD) content of a file, byte for byte, or null if it isn't committed. */
-export function showHead(repoDir: string, relPath: string): Buffer | null {
-  const r = runBuffer("git", ["show", `HEAD:${toPosix(relPath)}`], repoDir);
-  return r.code === 0 ? r.stdout : null;
-}
-
-/** Which of these repo-relative paths git ignores. Tracked files are never reported. */
-export function ignoredPaths(repoDir: string, relPaths: string[]): Set<string> {
-  if (!relPaths.length || !fs.existsSync(path.join(repoDir, ".git"))) return new Set();
-  // -z: NUL-separated in and out, so names with spaces or accents come back unquoted.
-  const r = runBuffer("git", ["check-ignore", "-z", "--stdin"], repoDir, relPaths.map(toPosix).join("\0") + "\0");
-  const ignored = new Set(r.stdout.toString("utf8").split("\0").filter(Boolean));
-  return new Set(relPaths.filter((p) => ignored.has(toPosix(p))));
 }
 
 // https://dev.azure.com/org/project/_git/Repo-Name -> Repo-Name

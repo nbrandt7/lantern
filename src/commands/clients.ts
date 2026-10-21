@@ -110,9 +110,7 @@ export async function newClient(onDone: () => void): Promise<void> {
   if (!client) return;
   onDone();
 
-  const actions = client.config.org && client.config.solutions.length ? ["Pull from Dataverse", "Edit Tenant Configuration"] : ["Edit Tenant Configuration"];
-  const choice = await vscode.window.showInformationMessage(`${client.name} is ready.`, ...actions);
-  if (choice === "Pull from Dataverse") await vscode.commands.executeCommand("lantern.pull", client);
+  const choice = await vscode.window.showInformationMessage(`${client.name} is ready.`, "Edit Tenant Configuration");
   if (choice === "Edit Tenant Configuration") await openClientConfig(client);
 }
 

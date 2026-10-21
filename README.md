@@ -1,6 +1,6 @@
 # Lantern for Dataverse
 
-Lantern for Dataverse is a suite of tools designed to help developers work on Dynamics 365 and Power Platform projects in Visual Studio Code. Each client gets its own folder, environments, and sign-in, so moving between clients, or between DEV, TEST, and PROD, doesn't mean reconfiguring anything. From there, Lantern pulls solutions from Dataverse with a review step, pushes web resources, builds and registers plug-ins, runs SQL and FetchXML queries against your org, and gives you IntelliSense that knows your org's columns and forms.
+Lantern for Dataverse is a suite of tools designed to help developers work on Dynamics 365 and Power Platform projects in Visual Studio Code. Each tenant has environments and sign-in, so moving between tenants, or between DEV, TEST, and PROD, doesn't mean reconfiguring anything. From there, Lantern lists configured solutions, pushes web resources, builds and registers plug-ins, runs SQL and FetchXML queries against your org, and gives you IntelliSense that knows your org's columns and forms.
 
 ## Contents
 
@@ -8,6 +8,7 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 - [Installation](#installation)
 - [Getting started](#getting-started)
 - [Features](#features)
+- [Search](#search)
 - [Configuration](#configuration)
 - [Sign-in and multiple accounts](#sign-in-and-multiple-accounts)
 - [Contributing](#contributing)
@@ -19,7 +20,7 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 | Area | What you get |
 | --- | --- |
 | **Clients and environments** | A folder per client, optionally linked to its Azure DevOps repo; DEV, TEST, and PROD environments per client; protected environments that confirm before any change; a per-client Microsoft account or app registration |
-| **Solutions** | Pull with a review step, export, import, copy between environments, version bumps, solution checker, generated documentation, environment comparison |
+| **Solutions** | List configured solutions, export, import, copy between environments, version bumps, solution checker, generated documentation, environment comparison |
 | **Web resources** | Push and compare from the editor, TypeScript web resources, push on save |
 | **Power Automate** | Browse cloud flows under each solution |
 | **Plug-ins** | Build and push (registers new assemblies and classes, updates existing ones), get source from a registered assembly, compare deployed with local, new projects and classes, step registration |
@@ -35,12 +36,6 @@ Lantern for Dataverse is a suite of tools designed to help developers work on Dy
 ## Installation
 
 Lantern runs in VS Code 1.90 or later.
-
-Expand **Tenants > selected tenant > Solutions > your solution > Power Automate flows** to list cloud flows in that solution. The list comes from the selected Dataverse environment and shows each flow's status. Use Lantern's Refresh action to reload it after adding or changing flows.
-
-Run **Lantern: Search** from the Command Palette and enter `/g /pa <flow name>` to search cloud flows in the selected tenant. Results show their index, name, and solution memberships.
-
-Classic workflows and desktop flows are excluded from this list.
 
 ### Install the latest release
 
@@ -75,7 +70,7 @@ Lantern calls these tools for some features. Install the ones you need.
 | Tool | Used for | Install |
 | --- | --- | --- |
 | Git | Connecting client folders to Azure DevOps repos | [git-scm.com](https://git-scm.com/) (Git for Windows includes Git Credential Manager for Azure DevOps sign-in) |
-| Power Platform CLI (`pac`) | Pull, solutions, C# early-bound classes, PCF, Power Pages | `dotnet tool install --global Microsoft.PowerApps.CLI.Tool` |
+| Power Platform CLI (`pac`) | Solution export and import, C# early-bound classes, PCF, Power Pages | `dotnet tool install --global Microsoft.PowerApps.CLI.Tool` |
 | .NET SDK | Building plug-ins, NuGet restore | [dotnet.microsoft.com](https://dotnet.microsoft.com/) |
 | ILSpy command line (`ilspycmd`, optional) | Get Plug-in Source, Compare Deployed Plug-in | Lantern offers `dotnet tool install --global ilspycmd` the first time you need it |
 | XrmDefinitelyTyped (optional) | Org-specific JavaScript form types | Extract the `Delegate.XrmDefinitelyTyped` NuGet package into `tools/xdt` (Windows only) |
@@ -89,51 +84,52 @@ The C# Dev Kit extension is recommended for C# IntelliSense.
 2. Run **Initialize Workspace** once. It creates a `package.json` with `@types/xrm`, a `.gitignore` that keeps client folders out of any repo at this level, and runs `npm install`.
 3. Click **Add Tenant**, enter the Dataverse URL and optional Entra tenant and solution names, then select the tenant to work with. **New Tenant Folder** also creates a local project folder or clones an Azure DevOps repo.
 
-The **Get started with Lantern** walkthrough (**Help > Get Started**) covers adding a client, signing in, environments, pull, push, and queries.
+The **Get started with Lantern** walkthrough (**Help > Get Started**) covers adding a tenant, signing in, environments, push, and queries.
 
 ## Features
 
-### Tenants view
+### Solutions and Environment views
 
-Everything about a client lives under its name in one tree:
+Lantern has two panes in its sidebar. Each shows the selected tenant; Solutions contains its configured solutions, and Environment contains the org-wide items:
 
 ```
-contoso                        DEV  contoso-dev.crm.dynamics.com  ⎇ main
-  Solutions                                                   [+]
-    ContosoCore                pulled
+Solutions                                                    [+]
+  contoso                      DEV  contoso-dev.crm.dynamics.com  ⎇ main
+    ContosoCore
       Tables                   this solution's tables
-      Web resources            click to open your copy, or Dataverse's if not pulled
-    ContosoExtras              not pulled yet
-  Plug-ins
-    Projects                   your plug-in projects, matched to the active environment
-      Contoso.Plugins          Plugins/Contoso.Plugins
-        1.0.0.3 in DEV         what's registered
-        AccountPlugin          2 steps, 1 off
-        ContactPlugin          not registered yet
-        OldPlugin              only in DEV (registered, gone from your code)
-      Contoso.Legacy           2.1.0.0 in DEV, no project here
-    Steps                      every custom step in the org, grouped by assembly
-    Traces                     errors only, last 24 hours
-  Queries                      saved queries, plus Recent
-  All tables                   every table in the org
-  System jobs                  failed, last 24 hours
-  Environment variables
-  Environment                  your account, roles, IDs, links
+      Web resources            click to open a local copy when available, or Dataverse's
+    ContosoExtras
+Environment
+  contoso                      DEV  contoso-dev.crm.dynamics.com  ⎇ main
+    Plug-ins
+      Projects                 your plug-in projects, matched to the active environment
+        Contoso.Plugins        Plugins/Contoso.Plugins
+          1.0.0.3 in DEV       what's registered
+          AccountPlugin        2 steps, 1 off
+          ContactPlugin        not registered yet
+          OldPlugin            only in DEV (registered, gone from your code)
+        Contoso.Legacy         2.1.0.0 in DEV, no project here
+      Steps                    every custom step in the org, grouped by assembly
+      Traces                   errors only, last 24 hours
+    Queries                    saved queries, plus Recent
+    All tables                 every table in the org
+    System jobs                failed, last 24 hours
+    Environment variables
+    Environment                your account, roles, IDs, links
 ```
 
-- **Solutions** lists the client's solutions and whether each one has been pulled into the folder. The **+** button lists the org's solutions (unmanaged first, with publisher and version) so you can add several at once, then offers to pull. Right-click a solution to remove it from the client (its folder stays) or reveal its folder. An unpacked solution folder the client doesn't list yet shows up dimmed, with a button to add it.
-- **Pack and Import from Your Files…** (right-click a pulled solution) packs what's in your folder with `pac solution pack` and imports it into any environment, which is useful for deploying from source control.
+- **Solutions** lists the configured solution names. The **+** button lists the org's solutions (unmanaged first, with publisher and version) so you can add several at once. Right-click a solution to remove it from the tenant configuration. Columns and forms under a solution's table show only that solution's components; tables set to include all objects show all their columns and forms. **All tables** remains org-wide.
 - Org sections load when you expand them and stay loaded until you click their refresh icon, so redrawing the tree never refetches.
 - Configure workspace subfolders as clients using **Configure as Client**. In folder mode, eligible new subfolders can be configured automatically, and Lantern's files are added to the repo's `.git/info/exclude`, so they never show up as changes in the client's repo.
 - **New Client** clones the repo when you give a URL. If the folder already exists, it attaches it to the repo without overwriting local files. It then restores NuGet packages for any `.sln`.
-- Each connected client has inline buttons for **Switch Environment**, **Pull**, **Publish All Customizations**, and **Edit Client Configuration**.
+- Each connected tenant has inline buttons for **Switch Environment**, **Publish All Customizations**, and **Edit Tenant Configuration**.
 - The **status bar** shows the active file's client and environment, in the warning color on a protected environment. Click it for that client's actions, including switching environments.
 
 ### Environments (DEV, TEST, PROD)
 
 A client can have several environments. Right-click it and choose **Add Environment…**. The first time, Lantern asks what to call the current org (DEV by default), then the new environment's name and org URL, and whether to protect it. Switch with **Switch Environment** on the client or by clicking the status bar.
 
-Everything follows the active environment: tables, queries, traces, steps, pushes, and pull. Each environment keeps its own metadata cache, its own pac profile, and its own account.
+Everything follows the active environment: tables, queries, traces, steps, and pushes. Each environment keeps its own metadata cache, its own pac profile, and its own account.
 
 A **protected** environment (PROD, typically) asks for confirmation before anything that changes it: pushing web resources or plug-ins, publishing, importing solutions, `UPDATE`/`DELETE`/`INSERT`, CSV imports, registering or toggling steps, environment variable edits, and user settings.
 
@@ -153,21 +149,36 @@ Right-click a solution for:
 - **Copy Solution to Environment…** exports from the environment you're on and imports into another, for example DEV to TEST as managed, in one step.
 - **Import Solution…** (also on the client) imports a zip into any of the client's environments and publishes.
 - **Change Solution Version…** suggests the next revision, build, minor, or major version, or takes one you type.
-- **Run Solution Checker** exports the solution, runs Microsoft's solution checker on it, shows a report with links to each rule, and puts issues in files you've pulled into the Problems panel.
+- **Run Solution Checker** exports the solution, runs Microsoft's solution checker on it, shows a report with links to each rule, and puts issues matching local web resource files into the Problems panel.
 - **Generate Documentation** writes `docs/<solution>.md`: tables with their custom columns and choices, forms with their libraries and event handlers, web resources with the functions in each and where they run, plug-in steps on those tables, and the solution's environment variables.
 
-### Pull from Dataverse, with review
-
-**Pull** runs `pac solution sync` into a temporary copy, compares it with your files, and opens the **Pull Review** panel. Nothing touches your files until you click **Apply**.
-
-- Each difference gets a choice: take Dataverse's version, or keep yours. Select several to set them together, or use the title buttons for everything undecided.
-- Clicking a file opens a diff (Dataverse on the left, your file on the right, editable). If you have uncommitted edits to that file, it opens the 3-way merge editor with the committed version as the base.
-- Binary files (assemblies, images) get take or keep only.
-- Files your repo's `.gitignore` ignores, such as built plug-in DLLs, are left alone.
-- Any file that gets replaced is copied to `.pull-backup/` first.
-- Solutions the client lists that aren't in the folder yet are cloned with `pac solution clone`.
-
 Each client gets its own pac auth profile, named after the folder, so switching between client tenants needs no manual `pac auth select`.
+
+### Search
+
+Run **Lantern: Search** from the Command Palette to search the selected tenant's active Dataverse environment. Each command is:
+
+| Command | What it searches | Example |
+| --- | --- | --- |
+| `pa <flow name>` | Power Automate cloud flows by name. | `pa test` |
+| `t <table name>` | Tables by display, logical, or schema name. | `t account` |
+| `br <business rule name>` | Business rules by name. | `br approval` |
+| `a <app name> e` | Model-driven, canvas, and code apps by name; `e` opens the selected app for editing. | `a sales e` |
+| `a <app name> r` | Model-driven, canvas, and code apps by name; `r` runs the selected app. | `a sales r` |
+| `s <solution name>` | Solutions by unique or friendly name. An exact unique name opens directly; a partial name shows matches. | `s CrmCore` or `s crm` |
+
+Component searches are global by default. To make the scope explicit, put `g` first: `g pa test`, `g t account`, `g br approval`, or `g a sales r`. To search only one solution, put `s <solution unique name>` first: `s CrmCore pa test`, `s CrmCore t account`, `s CrmCore br approval`, or `s CrmCore a sales e`. A solution-scoped result opens in that solution's context. App searches always require `e` or `r` at the end.
+
+| Scope parameter | Value | Meaning |
+| --- | --- | --- |
+| `g` | None | Explicitly searches the whole selected environment. |
+| `s` | Exact solution unique name when followed by a component command | Limits that component search to one solution. Used alone, it searches solution names. |
+
+Results show each component's index, name, and solution memberships. The Default Solution is omitted from the membership list. Select a component to open it in the active environment's configured browser and profile. Solution results show friendly and unique names. Classic workflows and desktop flows are excluded from `pa` results.
+
+Code apps run in the browser, but their source is edited locally. Selecting a code app from an `a ... e` search reports that Lantern cannot locate its source from Dataverse.
+
+Expand **Tenants > selected tenant > Solutions > your solution > Power Automate flows** to browse flows in that solution. Use Lantern's Refresh action to reload the list after changing flows.
 
 ### Web resources
 
@@ -183,9 +194,9 @@ Each client gets its own pac auth profile, named after the folder, so switching 
 
 ### Plug-ins
 
-Lantern treats a plug-in project in your folder and its registration in Dataverse as one thing. The assembly is matched by name, and each class by its full type name, which is the name Dataverse stores for a plug-in type. The Plug-ins list in the Clients view, the CodeLens on each class, and the steps and traces that open a class all use the same matching.
+Lantern treats a plug-in project in your folder and its registration in Dataverse as one thing. The assembly is matched by name, and each class by its full type name, which is the name Dataverse stores for a plug-in type. The Plug-ins list in the Environment view, the CodeLens on each class, and the steps and traces that open a class all use the same matching.
 
-**Build and Push Plug-in** (`Ctrl+Alt+U` in a plug-in class, the CodeLens above each class, the Clients view, or a `.csproj` in Explorer) runs `dotnet build`, reads the built DLL, and registers it through the Dataverse Web API. There's no `pac` step and no IDs to paste.
+**Build and Push Plug-in** (`Ctrl+Alt+U` in a plug-in class, the CodeLens above each class, the Environment view, or a `.csproj` in Explorer) runs `dotnet build`, reads the built DLL, and registers it through the Dataverse Web API. There's no `pac` step and no IDs to paste.
 
 - The first push registers the assembly (sandboxed, stored in Dataverse) and a plug-in type for every plug-in and workflow activity class, and asks which solution to add it to.
 - Later pushes replace the registered assembly's content, so its steps stay, and register any classes that are new.
@@ -272,7 +283,7 @@ Metadata is cached per org in VS Code's storage (never in client repos), so afte
 
 ### SQL and FetchXML queries
 
-**New Query** (the database icon in the Clients view, or a client's right-click menu) opens a SQL document aimed at that client. Write SQL against Dataverse tables and press **F5** (or click **Run** above the query). Select part of the document to run just that part. Several statements separated by `;` or `GO` each get their own results.
+**New Query** (the database icon in the Environment view, or a tenant's right-click menu) opens a SQL document aimed at that tenant. Write SQL against Dataverse tables and press **F5** (or click **Run** above the query). Select part of the document to run just that part. Several statements separated by `;` or `GO` each get their own results.
 
 ```sql
 SELECT TOP 50 a.name, a.revenue, c.fullname AS primary_contact
@@ -383,7 +394,7 @@ None of them change data. They need a VS Code version with language model tools.
 
 ### Client settings
 
-Lantern uses one selected tenant at a time. In the default `global` mode, saved tenants live in Lantern's global extension storage and are available in every VS Code window. No tenant is selected when a window opens; use **Select Tenant** or **Add Tenant** at the top of the Tenants view. In `folder` mode, only tenants in `.lantern/config.json` at an open workspace root are available. Set `defaultTenant` to a tenant name to select it when the folder opens. **Edit Tenant Configuration** opens the active mode's JSON. Switching modes never moves or deletes settings. Root-level `client.json`, root-level `config.json`, `.lantern/client.json`, and `xdt.json` are ignored.
+Lantern uses one selected tenant at a time. In the default `global` mode, saved tenants live in Lantern's global extension storage and are available in every VS Code window. No tenant is selected when a window opens; use **Select Tenant** or **Add Tenant** at the top of the Solutions view. In `folder` mode, only tenants in `.lantern/config.json` at an open workspace root are available. Set `defaultTenant` to a tenant name to select it when the folder opens. **Edit Tenant Configuration** opens the active mode's JSON. Switching modes never moves or deletes settings. Root-level `client.json`, root-level `config.json`, `.lantern/client.json`, and `xdt.json` are ignored.
 
 For multiple tenants in one local config, use a list. `defaultTenant` selects the tenant when the folder opens, and each tenant's `defaultEnvironment` selects its initial Dataverse environment. **Switch Environment** changes the current window without changing that default.
 
@@ -454,11 +465,15 @@ In folder mode, Lantern only configures a workspace subfolder as a client automa
 | `lantern.clientSettingsLocation` | `global` | Use globally saved tenants (`global`) or tenants from a workspace root's `.lantern/config.json` (`folder`) |
 | `lantern.createJsconfig` | `true` | Create `jsconfig.json` in client folders for typed Xrm IntelliSense |
 
+### Logs
+
+Lantern writes a daily log to `~/.lantern/log/YYYY-MM-DD.log` (for example, `C:\Users\you\.lantern\log\2026-10-16.log` on Windows). It includes Lantern Output, reported errors, search activity, Dataverse request status and timing, and command-line process exit status. Dataverse request logs omit authentication tokens, query parameters, and request bodies.
+
 ## Sign-in and multiple accounts
 
 Lantern signs in two ways, and both follow the account you choose for each client:
 
-- **pac** (pull, solution packing, PCF, Power Pages, early-bound classes) keeps one profile per client, named after the folder, created on first use.
+- **pac** (solution export and import, PCF, Power Pages, early-bound classes) keeps one profile per client, named after the folder, created on first use.
 - **The Dataverse Web API** (everything else) uses VS Code's Microsoft account sign-in.
 
 If different clients use different logins, right-click a client and choose **Sign In As…**. Pick an account VS Code is already signed into, or sign in with a new one. Lantern saves it for that client and from then on always signs in to that client's org with it, whatever account other clients use. Tokens are cached per account, so switching between clients never reuses another client's token. If the client's pac profile was created with a different account, Lantern offers to recreate it so pac and the Web API agree. The account each client uses shows in its tooltip and under **Environment**. Without a pinned account, Lantern uses whichever account VS Code picks, which is fine if you only have one.
@@ -508,7 +523,7 @@ You can run a single suite with `node test/unit.js` (after `npm run compile`).
 | --- | --- |
 | `src/extension.ts` | Activation and command registration |
 | `src/commands/` | Command handlers: the prompts and flows behind each command |
-| `src/core/` | Dataverse Web API client, SQL translation, pull, plug-in assembly reading and registration, code analysis, and other logic |
+| `src/core/` | Dataverse Web API client, SQL translation, plug-in assembly reading and registration, code analysis, and other logic |
 | `src/ui/` | Tree views, editors, CodeLens, diagnostics, the results panel, sign-in, and Copilot tools |
 | `schemas/` | JSON schemas for client settings and Custom API definitions |
 | `snippets/` | JavaScript and C# snippets |
@@ -532,7 +547,6 @@ You can run a single suite with `node test/unit.js` (after `npm run compile`).
 
 ## Known limitations
 
-- Pull recognizes the classic unpacked solution layout (`.cdsproj` or `Other/Solution.xml`). Repos written by Dataverse's native Git integration use a YAML layout that isn't supported yet.
 - XrmDefinitelyTyped is a .NET Framework tool and only runs on Windows.
 - Older non-SDK-style plug-in projects may need Visual Studio or MSBuild to build.
 

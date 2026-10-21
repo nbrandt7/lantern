@@ -7,8 +7,8 @@ export const SKIP_DIRS = new Set([
   "typings", "typings.tmp", ".pull-backup", ".lantern",
 ]);
 
-/** Never copied, compared, or overwritten by a pull. */
-export const PULL_IGNORE = new Set([
+/** Folders and files skipped when scanning local source files. */
+export const SCAN_IGNORE = new Set([
   ".git", "bin", "obj", "node_modules", ".vs", "typings", "typings.tmp", ".pull-backup",
   "jsconfig.json", ".lantern",
 ]);
@@ -47,13 +47,13 @@ export function findFiles(dir: string, test: (name: string, fullPath: string) =>
   return found;
 }
 
-/** Relative paths of every file under root, skipping PULL_IGNORE. */
+/** Relative paths of every file under root, skipping tooling files. */
 export function listFiles(root: string): string[] {
   const files: string[] = [];
   if (!isDirectory(root)) return files;
   const walk = (rel: string): void => {
     for (const e of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
-      if (PULL_IGNORE.has(e.name)) continue;
+      if (SCAN_IGNORE.has(e.name)) continue;
       const child = path.join(rel, e.name);
       if (e.isDirectory()) walk(child);
       else if (e.isFile()) files.push(child);
@@ -61,21 +61,6 @@ export function listFiles(root: string): string[] {
   };
   walk("");
   return files;
-}
-
-export function copyTree(from: string, to: string): void {
-  fs.cpSync(from, to, { recursive: true, filter: (src) => src === from || !PULL_IGNORE.has(path.basename(src)) });
-}
-
-export function isBinary(buffer: Buffer): boolean {
-  return buffer.subarray(0, 8000).includes(0);
-}
-
-/** Treats CRLF and LF as equal for text so line-ending churn doesn't show up as a change. */
-export function sameContent(a: Buffer, b: Buffer): boolean {
-  if (a.equals(b)) return true;
-  if (isBinary(a) || isBinary(b)) return false;
-  return a.toString("utf8").replace(/\r\n/g, "\n") === b.toString("utf8").replace(/\r\n/g, "\n");
 }
 
 /** Walks up from start until test passes or root is reached. */

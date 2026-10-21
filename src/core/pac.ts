@@ -114,18 +114,6 @@ export function accountFromAuthList(output: string, profile: string): string | u
   return undefined;
 }
 
-export async function solutionClone(ctx: PacContext, client: Client, solution: string, outputDirectory: string): Promise<void> {
-  await pac(
-    ctx,
-    ["solution", "clone", "--name", solution, "--outputDirectory", outputDirectory, "--environment", client.config.org],
-    `Clone failed for ${solution}. Check that it's the unique name, not the display name.`
-  );
-}
-
-export async function solutionSync(ctx: PacContext, client: Client, folder: string): Promise<void> {
-  await pac(ctx, ["solution", "sync", "--solution-folder", folder, "--environment", client.config.org], "Solution sync failed.");
-}
-
 export async function modelBuilder(ctx: PacContext, args: string[]): Promise<void> {
   await pac(ctx, ["modelbuilder", "build", ...args], "pac modelbuilder build failed.");
 }
@@ -142,11 +130,6 @@ export async function solutionImport(ctx: PacContext, client: Client, zipPath: s
 
 export async function solutionCheck(ctx: PacContext, zipPath: string, outDir: string): Promise<void> {
   await pac(ctx, ["solution", "check", "--path", zipPath, "--outputDirectory", outDir], "Solution checker failed.");
-}
-
-/** Packs an unpacked solution folder (the one holding Other/Solution.xml) into a zip. */
-export async function solutionPack(ctx: PacContext, folder: string, zipPath: string, managed: boolean): Promise<void> {
-  await pac(ctx, ["solution", "pack", "--zipfile", zipPath, "--folder", folder, "--packagetype", managed ? "Managed" : "Unmanaged"], "Packing the solution failed.");
 }
 
 export async function pluginInit(ctx: PacContext, outputDirectory: string): Promise<void> {
