@@ -64,9 +64,10 @@ export function registerPcfAndPages(onChanged: () => void): vscode.Disposable[] 
     r("lantern.pcf.new", async (arg?: unknown) => {
       const client = await resolveClient(arg);
       if (!client) return;
-      const namespace = await vscode.window.showInputBox({ prompt: "Namespace", value: client.config.scriptNamespace || "Acme", validateInput: (v: string) => (/^[A-Za-z_][\w.]*$/.test(v.trim()) ? undefined : "Letters, digits, dots, and underscores.") });
+      // pac pcf init's rules: a name it rejects fails only after the PCF/<name> folder is made.
+      const namespace = await vscode.window.showInputBox({ prompt: "Namespace", value: client.config.scriptNamespace || "Acme", validateInput: (v: string) => (/^[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)*$/.test(v.trim()) ? undefined : "Letters and digits, with single dots between parts that each start with a letter.") });
       if (!namespace) return;
-      const name = await vscode.window.showInputBox({ prompt: "Control name", validateInput: (v: string) => (/^[A-Za-z_]\w*$/.test(v.trim()) ? undefined : "Letters, digits, and underscores.") });
+      const name = await vscode.window.showInputBox({ prompt: "Control name", validateInput: (v: string) => (/^[A-Za-z][A-Za-z0-9]*$/.test(v.trim()) ? undefined : "Letters and digits, starting with a letter.") });
       if (!name) return;
       const template = await vscode.window.showQuickPick(
         [
@@ -122,7 +123,7 @@ export function registerPcfAndPages(onChanged: () => void): vscode.Disposable[] 
       if (!(await confirmProtected(client, `Push ${node.control.name}`))) return;
       const ok = await withProgress(`Pushing ${node.control.name} to ${client.envName || client.orgHost}`, async (ctx) => {
         await ensureAuth(ctx, client);
-        await pcfPush(ctx, node.control.dir, prefix.trim());
+        await pcfPush(ctx, client, node.control.dir, prefix.trim());
         return true;
       });
       if (ok) void vscode.window.showInformationMessage(`Pushed ${node.control.name} to ${client.envName || client.orgHost}. It's in the PowerAppsTools_${prefix} solution.`);

@@ -36,7 +36,8 @@ export function addHandler(formXml: string, h: HandlerRequest): { xml: string; c
   const handler = `<Handler functionName="${esc(h.functionName)}" libraryName="${esc(h.library)}" handlerUniqueId="${guid()}" enabled="true" parameters="" passExecutionContext="${h.passExecutionContext}" />`;
   const formEvents = formLevelEvents(xml);
   const attrPart = h.event === "onchange" ? `[^>]*\\battribute="${reEsc(h.attribute ?? "")}"` : "";
-  const eventRe = new RegExp(`<event\\b(?=[^>]*\\bname="${h.event}")${attrPart}[^>]*?(\\/?)>([\\s\\S]*?)(<\\/event>|$)`, "i");
+  // A self-closing <event … /> has no body: matching one up to the next </event> would take in the next event.
+  const eventRe = new RegExp(`<event\\b(?=[^>]*\\bname="${h.event}")${attrPart}[^>]*?(?:(\\/)>|>([\\s\\S]*?)(?:<\\/event>|$))`, "i");
   if (formEvents) {
     const inner = xml.slice(formEvents.innerStart, formEvents.innerEnd);
     const m = eventRe.exec(inner);
@@ -53,7 +54,7 @@ export function addHandler(formXml: string, h: HandlerRequest): { xml: string; c
     const newEvent = eventXml(h, handler);
     if (m && m[1] === "/") {
       const start = formEvents.innerStart + m.index;
-      xml = xml.slice(0, start) + newEvent + xml.slice(start + m[0].length - m[3].length);
+      xml = xml.slice(0, start) + newEvent + xml.slice(start + m[0].length);
     } else xml = xml.slice(0, formEvents.innerEnd) + newEvent + xml.slice(formEvents.innerEnd);
     return { xml, changed: true, already: false };
   }

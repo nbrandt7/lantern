@@ -39,6 +39,8 @@ export interface UsageReport {
     fn?: string;
     /** Where that function runs, e.g. "Account (Main) OnChange of address1_line2". */
     runsOn?: string[];
+    /** The file also names the table, so the line is more likely about this table's column. */
+    namesTable?: boolean;
   }>;
   /** Sections that couldn't be searched, with the reason (usually permissions). */
   failures: Array<{ section: string; message: string }>;
@@ -76,13 +78,15 @@ export function formUsages(forms: FormMeta[], column: string): UsageReport["form
   return out;
 }
 
-/** Lines in the client's own code that mention the column as a string, e.g. getAttribute("fax") or entity["fax"]. */
 /**
- * Lines in the client's own code that name the column, with the function each sits in.
- * runsOn(file, fn) says where a script function is registered, when known.
+ * Lines in the client's own code that name the column as a string, e.g. getAttribute("fax") or entity["fax"],
+ * with the function each sits in. runsOn(file, fn) says where a script function is registered, when known.
+ * The search is by column name only, so a common name (name, statuscode) also finds other tables' columns;
+ * namesTable marks the files that also name the table.
  */
-export function codeUsages(clientDir: string, column: string, runsOn?: (file: string, fn: string) => string[]): UsageReport["code"] {
+export function codeUsages(clientDir: string, column: string, runsOn?: (file: string, fn: string) => string[], table?: string): UsageReport["code"] {
   const re = new RegExp(`["'\`]${escapeRe(column)}["'\`]`, "i");
+  const tableRe = table ? new RegExp(`["'\`]${escapeRe(table)}["'\`]`, "i") : undefined;
   // Extensionless files under WebResources are scripts named without ".js" in Dataverse.
   const files = findFiles(
     clientDir,
@@ -99,6 +103,7 @@ export function codeUsages(clientDir: string, column: string, runsOn?: (file: st
       continue;
     }
     if (!re.test(text)) continue;
+    const namesTable = tableRe ? tableRe.test(text) : undefined;
     const isCs = /\.cs$/i.test(file);
     const outline = isCs ? [] : outlineJs(text);
     const lineStarts = [0];
@@ -106,7 +111,7 @@ export function codeUsages(clientDir: string, column: string, runsOn?: (file: st
     text.split(/\r?\n/).forEach((line, i) => {
       if (!re.test(line)) return;
       const fn = isCs ? csMethodAt(text, i) : functionAt(outline, lineStarts[i] + Math.max(0, line.search(re)))?.name;
-      hits.push({ file, line: i + 1, text: line.trim().slice(0, 160), fn, runsOn: fn && !isCs && runsOn ? runsOn(file, fn) : undefined });
+      hits.push({ file, line: i + 1, text: line.trim().slice(0, 160), fn, runsOn: fn && !isCs && runsOn ? runsOn(file, fn) : undefined, namesTable });
     });
   }
   return hits;
@@ -121,7 +126,7 @@ export async function findUsages(
   webResourceName?: (file: string) => string | undefined
 ): Promise<UsageReport> {
   const runsOn = (file: string, fn: string) => registrationsOf(forms, webResourceName?.(file), fn);
-  const report: UsageReport = { table, column, forms: formUsages(forms, column), views: [], processes: [], steps: [], code: codeUsages(clientDir, column, runsOn), failures: [] };
+  const report: UsageReport = { table, column, forms: formUsages(forms, column), views: [], processes: [], steps: [], code: codeUsages(clientDir, column, runsOn, table), failures: [] };
   const word = new RegExp(`(^|[^\\w])${escapeRe(column)}([^\\w]|$)`, "i");
   const attr = (name: string) => new RegExp(`${name}\\s*=\\s*["']${escapeRe(column)}["']`, "i");
 
@@ -170,7 +175,11 @@ export async function findUsages(
   return report;
 }
 
-export function usageMarkdown(r: UsageReport, columnLabel: string, fileLink: (file: string, line: number) => string, clientDir: string): string {
+/**
+ * maxCode limits the code lines listed (for AI tools, whose results have a size limit);
+ * lines in files that also name the table come first, and the rest are counted.
+ */
+export function usageMarkdown(r: UsageReport, columnLabel: string, fileLink: (file: string, line: number) => string, clientDir: string, maxCode?: number): string {
   const total = r.forms.length + r.views.length + r.processes.length + r.steps.length + r.code.length;
   const lines = [`# Where ${columnLabel} (\`${r.column}\`) is used`, "", `Table \`${r.table}\`. ${total ? `Found in ${total} place${total === 1 ? "" : "s"}.` : "No uses found."}`, ""];
 
@@ -194,9 +203,18 @@ export function usageMarkdown(r: UsageReport, columnLabel: string, fileLink: (fi
   lines.push("");
 
   lines.push(`## Code in this client folder (${r.code.length})`, "");
-  for (const c of r.code) {
+  const capped = maxCode !== undefined && r.code.length > maxCode;
+  // Stable: within each group the lines stay in file order.
+  const listed = capped ? [...r.code.filter((c) => c.namesTable), ...r.code.filter((c) => !c.namesTable)].slice(0, maxCode) : r.code;
+  if (capped && r.code.some((c) => c.namesTable === false)) lines.push(`Matched by column name, so some lines may be about another table's \`${r.column}\`. Files that also name \`${r.table}\` come first.`, "");
+  for (const c of listed) {
     const where = c.fn ? ` in **${c.fn}**${c.runsOn?.length ? ` (runs on ${c.runsOn.join("; ")})` : ""}` : "";
     lines.push(`- [${path.relative(clientDir, c.file).split(path.sep).join("/")}:${c.line}](${fileLink(c.file, c.line)})${where}: \`${c.text.replace(/`/g, "'")}\``);
+  }
+  if (capped) {
+    const rest = r.code.filter((c) => !listed.includes(c));
+    const files = new Set(rest.map((c) => c.file)).size;
+    lines.push(`- ...and ${rest.length} more line${rest.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"}. Lantern: Find Where Column Is Used in VS Code lists them all.`);
   }
   lines.push("");
 

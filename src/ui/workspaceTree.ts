@@ -13,6 +13,8 @@ import { RegisteredAssembly } from "../core/pluginRegistration";
 import { assembliesWithoutProjects, ClassStatus, forgetOrgPlugins, orgPlugins, projectStatus } from "../core/pluginStatus";
 import { projectPluginClasses } from "../core/csharp";
 import { accountInUse, dataverseFor } from "./auth";
+import { solutionsContaining } from "../core/solutionComponents";
+import { componentFor } from "./solutionRefs";
 import { scanAll } from "./context";
 import { MetaNode, MetadataTree } from "./metadataTree";
 import { TraceNode, TraceTree } from "./traceTree";
@@ -35,7 +37,7 @@ export type LocalNode =
   | { kind: "flow"; client: Client; unique: string; flow: SolutionFlow }
   | { kind: "webResource"; client: Client; unique: string; resource: SolutionWebResource }
   | { kind: "plugin"; client: Client; plugin: PluginProject }
-  | { kind: "hint"; client: Client; text: string; command?: vscode.Command; icon?: string; tooltip?: string }
+  | { kind: "hint"; client: Client; text: string; command?: vscode.Command; icon?: string; tooltip?: string; contextValue?: string; plugin?: PluginProject }
   /** A plug-in class: in your code, registered in the active environment, or both. */
   | { kind: "pluginClass"; client: Client; plugin?: PluginProject; assembly: string; typeName: string; status: ClassStatus; assemblyRegistered: boolean; remote?: boolean }
   /** A registered assembly with no project in the client folder. */
@@ -97,23 +99,61 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
     return this.parents.get(node);
   }
 
-  /** Both sidebar panes share the same nodes, cache, and refresh events. */
+  /**
+   * Both sidebar panes share the same nodes, cache, and refresh events. Neither shows
+   * the tenant itself (the Tenant view does): Solutions starts at the solutions,
+   * Environment at Plug-ins, Queries, tables and the rest.
+   */
   forPane(pane: "solutions" | "environment"): vscode.TreeDataProvider<TreeNode> {
+    const paneChildren = async (client: TreeNode): Promise<TreeNode[]> => {
+      const children = await this.getChildren(client);
+      if (pane === "environment") return children.filter((child) => child.kind !== "group" || child.group !== "solutions");
+      const solutionsGroup = children.find((child) => child.kind === "group" && child.group === "solutions");
+      if (!solutionsGroup) return [];
+      const solutions = await this.getChildren(solutionsGroup);
+      for (const solution of solutions) this.parents.set(solution, client);
+      return solutions;
+    };
     return {
       onDidChangeTreeData: this.onDidChangeTreeData,
       getTreeItem: (node) => this.getTreeItem(node),
-      getParent: (node) => this.getParent(node),
+      // The tenant row isn't shown, so what hangs under it is at the top.
+      getParent: (node) => {
+        const parent = this.getParent(node);
+        return parent && (parent as { kind?: string }).kind === "client" ? undefined : parent;
+      },
       getChildren: async (node) => {
-        const children = await this.getChildren(node);
-        if (node?.kind !== "client") return children;
-        if (pane === "environment") return children.filter((child) => child.kind !== "group" || child.group !== "solutions");
-        const solutionsGroup = children.find((child) => child.kind === "group" && child.group === "solutions");
-        if (!solutionsGroup) return [];
-        const solutions = await this.getChildren(solutionsGroup);
-        for (const solution of solutions) this.parents.set(solution, node);
-        return solutions;
+        if (!node) {
+          const roots = await this.getChildren();
+          const clients = roots.filter((r) => r.kind === "client");
+          return (await Promise.all(clients.map(paneChildren))).flat();
+        }
+        if (node.kind === "client") return paneChildren(node);
+        return this.getChildren(node);
+      },
+      // On hover: which solutions a plug-in, step, web resource, flow, table or column is in.
+      resolveTreeItem: async (item, node) => {
+        await this.addSolutionsToTooltip(item, node);
+        return item;
       },
     };
+  }
+
+  private async addSolutionsToTooltip(item: vscode.TreeItem, node: TreeNode): Promise<void> {
+    const target = await componentFor(node, { silent: true }).catch(() => undefined);
+    if (!target?.client.config.org) return;
+    let names: Awaited<ReturnType<typeof solutionsContaining>>;
+    try {
+      // Silent: hovering never asks anyone to sign in.
+      names = await solutionsContaining(dataverseFor(target.client, { silent: true }), target.ref);
+    } catch {
+      return;
+    }
+    const md = item.tooltip instanceof vscode.MarkdownString ? item.tooltip : new vscode.MarkdownString();
+    if (!(item.tooltip instanceof vscode.MarkdownString) && item.tooltip) md.appendText(String(item.tooltip));
+    md.supportThemeIcons = true;
+    md.appendMarkdown(`\n\n$(package) ${names.length ? `In ${names.map((n) => `**${n.friendlyName}**${n.managed ? " (managed)" : ""}`).join(", ")}` : "Not in any solution yet"}`);
+    item.tooltip = md;
   }
 
   constructor(
@@ -126,19 +166,57 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
     metadata.onDidChangeTreeData((n) => this.changed.fire(n));
   }
 
+  /** The org and account each shown tenant is on, as of the last redraw. */
+  private where = "";
+  /** Settles when that changes (another environment, tenant, or Sign In As). */
+  private moved = signal();
+
+  /**
+   * VS Code runs one refresh of a view at a time, and a refresh waits for every load it asked for.
+   * A load still running for the org the tenant just left (a big table list, a sign-in nobody answers)
+   * would hold the view on that org's rows. So when the org or account changes, those loads give way:
+   * they return nothing now and finish in the background, filling their own org's cache.
+   */
+  private releaseIfMoved(): void {
+    const where = scanAll().clients.map(clientKey).join("\n");
+    if (where === this.where) return;
+    this.where = where;
+    this.moved.fire();
+    this.moved = signal();
+  }
+
   /** Redraws the tree, or reloads one node (a section reloads from Dataverse). */
   refresh(node?: TreeNode): void {
+    this.releaseIfMoved();
     if (!node) for (const key of this.loaded.keys()) if (key.includes("|flows|")) this.loaded.delete(key);
     if (node && node.kind === "section" && !("tab" in node)) this.loaded.delete(sectionKey(node.client, node.section));
     if (node && (node.kind === "solution" || node.kind === "solutionPart")) {
       this.loaded.delete(`${clientKey(node.client)}|webresources|${node.unique.toLowerCase()}`);
       this.loaded.delete(`${clientKey(node.client)}|flows|${node.unique.toLowerCase()}`);
+      // The table list too, so a table created in the maker portal since shows up.
+      this.serviceFor(node.client).forget("tables");
       this.serviceFor(node.client).forget("solution-tables/");
       this.serviceFor(node.client).forget("solution-components/");
     }
     if (node && node.kind === "client") for (const k of [...this.loaded.keys()]) if (k.startsWith(`${node.client.name}@`)) this.loaded.delete(k);
     if (node && (node.kind === "client" || node.kind === "plugin" || node.kind === "remoteAssembly" || (node.kind === "group" && (node.group === "plugins" || node.group === "pluginProjects")))) forgetOrgPlugins(node.client);
     this.changed.fire(node);
+  }
+
+  /** The Refresh button: everything loaded from Dataverse (sections, solution parts, plug-ins) loads again. */
+  reloadAll(): void {
+    this.releaseIfMoved();
+    this.loaded.clear();
+    forgetOrgPlugins();
+    this.changed.fire(undefined);
+  }
+
+  /** After adding to or removing from a solution: every solution's flows, web resources and tables reload. */
+  reloadSolutions(client: Client): void {
+    for (const k of [...this.loaded.keys()]) if (k.startsWith(`${clientKey(client)}|webresources|`) || k.startsWith(`${clientKey(client)}|flows|`)) this.loaded.delete(k);
+    this.serviceFor(client).forget("solution-tables/");
+    this.serviceFor(client).forget("solution-components/");
+    this.changed.fire(undefined);
   }
 
   /** Reloads one kind of section for every client (after its filter changes). */
@@ -169,6 +247,11 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
       for (const dir of unconfigured) nodes.push({ kind: "unconfigured", dir });
       return nodes;
     }
+    const moved = this.moved.promise;
+    return Promise.race([this.childrenOf(node), moved.then((): TreeNode[] => [])]);
+  }
+
+  private async childrenOf(node: TreeNode): Promise<TreeNode[]> {
     if (isMeta(node)) return this.metadata.getChildren(node);
     try {
       return await this.children(node as LocalNode | TraceNode);
@@ -192,7 +275,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
             kind: "hint",
             client: c,
             text: "Set the Dataverse URL in the tenant configuration to connect",
-            command: { command: "lantern.openClientConfig", title: "Edit .lantern/config.json", arguments: [c] },
+            command: { command: "lantern.openClientConfig", title: "Edit Tenant Configuration", arguments: [c] },
           });
         }
         const group = (g: Extract<LocalNode, { kind: "group" }>["group"]) => this.keep(`${c.name}|group|${g}`, { kind: "group", client: c, group: g }, node);
@@ -304,7 +387,8 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
               typeName: type.typename,
               type,
               kind: type.isworkflowactivity ? "workflow" : "plugin",
-              steps: org.steps.filter((s) => s.assembly === node.assembly.name && s.typeName === type.typename),
+              // By type ID when the step has it: two registered versions of an assembly share type names.
+              steps: org.steps.filter((s) => (s.typeId ? s.typeId === type.plugintypeid : s.assembly === node.assembly.name && s.typeName === type.typename)),
             },
           }, node));
       }
@@ -364,7 +448,15 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
             `${plugin.assembly} ${st.registered.version} is registered in ${where}. Your project builds ${st.localVersion}.`,
             st.registered.publickeytoken ? `Public key token ${st.registered.publickeytoken}` : "",
             st.others.length ? `Also registered: ${st.others.map((o) => o.version).join(", ")}` : "",
+            st.registered.ismanaged ? "" : "Click to edit the registration: description, isolation mode, and each class's names.",
           ].filter(Boolean).join("\n"),
+          plugin,
+          ...(st.registered.ismanaged
+            ? {}
+            : {
+                contextValue: "pluginRegistration",
+                command: { command: "lantern.plugins.editRegistration", title: "Edit Plug-in Registration", arguments: [{ client, plugin, assembly: st.registered }] },
+              }),
         }
       : {
           kind: "hint",
@@ -596,6 +688,8 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
       case "solutionPart": {
         const item = new vscode.TreeItem({ tables: "Tables", webresources: "Web resources", flows: "Power Automate flows" }[node.part], C.Collapsed);
         item.iconPath = new vscode.ThemeIcon({ tables: "table", webresources: "file-code", flows: "git-merge" }[node.part]);
+        // The + on it adds existing ones to the solution.
+        item.contextValue = `solutionPart.${node.part}`;
         return item;
       }
       case "flow": {
@@ -631,6 +725,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         item.iconPath = new vscode.ThemeIcon(node.icon ?? "info");
         item.command = node.command;
         if (node.tooltip) item.tooltip = node.tooltip;
+        if (node.contextValue) item.contextValue = node.contextValue;
         return item;
       }
       case "pluginClass": {
@@ -645,10 +740,13 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
         else state = "unregistered";
         if (node.remote) state = "registered";
         const stepText = st.steps.length ? `${st.steps.length} step${st.steps.length === 1 ? "" : "s"}${off ? `, ${off} off` : ""}` : st.kind === "workflow" ? "workflow activity" : "no steps";
-        item.description =
+        // A display name set in Lantern or the Plugin Registration Tool (its default is a generated ID, not worth showing).
+        const friendly = st.type?.friendlyname && !/^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(st.type.friendlyname) && st.type.friendlyname !== node.typeName ? st.type.friendlyname : "";
+        const status =
           state === "orphan" ? `only in ${where}${st.steps.length ? `, ${stepText}` : ""}` :
           state === "unregistered" ? (node.assemblyRegistered ? "not registered yet" : st.kind === "workflow" ? "workflow activity" : "") :
           stepText;
+        item.description = friendly ? `${friendly} · ${status}` : status;
         item.iconPath = state === "orphan"
           ? new vscode.ThemeIcon("warning", new vscode.ThemeColor("list.warningForeground"))
           : new vscode.ThemeIcon(st.kind === "workflow" ? "symbol-event" : "symbol-class");
@@ -696,10 +794,10 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
       case "step": {
         const s = node.step;
         const item = new vscode.TreeItem(`${s.message}${s.table ? ` of ${s.table}` : ""}`, C.None);
-        item.description = [s.typeName.split(".").pop(), s.stage, s.mode === "Asynchronous" ? "async" : "", s.enabled ? "" : "off"].filter(Boolean).join(", ");
-        item.iconPath = new vscode.ThemeIcon(s.enabled ? "plug" : "circle-slash", s.enabled ? undefined : new vscode.ThemeColor("disabledForeground"));
-        item.contextValue = s.enabled ? "step.enabled" : "step.disabled";
-        item.tooltip = `${s.name}\n${s.typeName}\n${s.stage}, ${s.mode}, order ${s.rank}${s.filtering ? `\nRuns when these change: ${s.filtering}` : ""}`;
+        item.description = [s.typeName.split(".").pop(), s.stage, s.mode === "Asynchronous" ? "async" : "", s.enabled ? "" : "off", s.profiled ? "profiling" : ""].filter(Boolean).join(", ");
+        item.iconPath = new vscode.ThemeIcon(s.profiled && s.enabled ? "debug-alt" : s.enabled ? "plug" : "circle-slash", s.enabled ? undefined : new vscode.ThemeColor("disabledForeground"));
+        item.contextValue = `${s.enabled ? "step.enabled" : "step.disabled"}${s.profiled ? ".profiling" : ""}`;
+        item.tooltip = `${s.name}\n${s.typeName}\n${s.stage}, ${s.mode}, order ${s.rank}${s.filtering ? `\nRuns when these change: ${s.filtering}` : ""}${s.profiled ? "\nProfiling: each run is recorded in the trace log for Debug Plug-in Step (Stop Profiling turns it off)" : ""}`;
         item.command = { command: "lantern.steps.openCode", title: "Open plug-in class", arguments: [node] };
         return item;
       }
@@ -752,9 +850,20 @@ export class WorkspaceTree implements vscode.TreeDataProvider<TreeNode> {
   }
 }
 
-/** Cached per client and org, so switching environments never shows the other org's data. */
-const clientKey = (client: Client) => `${client.name}@${client.orgHost}`;
+/**
+ * Cached per client, org and the account it's set to sign in with, so switching environments or
+ * Sign In As never shows the other org's or account's data (Environment's user, roles and so on).
+ */
+const clientKey = (client: Client) =>
+  `${client.name}@${client.orgHost}|${client.config.appId ? `app:${client.config.appId}` : (client.config.account || "").toLowerCase()}`;
 const sectionKey = (client: Client, section: Section) => `${clientKey(client)}|${section}`;
+
+/** A promise and the function that settles it (Promise.withResolvers needs Node 22; VS Code 1.90 has 20). */
+function signal(): { promise: Promise<void>; fire: () => void } {
+  let fire!: () => void;
+  const promise = new Promise<void>((resolve) => (fire = resolve));
+  return { promise, fire };
+}
 
 function message(text: string, icon = "info"): TraceNode {
   return { kind: "message", text, icon };

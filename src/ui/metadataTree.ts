@@ -8,10 +8,10 @@ export type MetaNode =
   | { kind: "tableGroup"; client: Client; group: "solution" | "all" }
   | { kind: "table"; client: Client; table: TableMeta; solution?: string }
   | { kind: "columns"; client: Client; table: TableMeta; solution?: string }
-  | { kind: "column"; client: Client; table: TableMeta; column: ColumnMeta }
+  | { kind: "column"; client: Client; table: TableMeta; column: ColumnMeta; solution?: string }
   | { kind: "option"; column: ColumnMeta; value: number; label: string }
   | { kind: "forms"; client: Client; table: TableMeta; solution?: string }
-  | { kind: "form"; client: Client; table: TableMeta; form: FormMeta }
+  | { kind: "form"; client: Client; table: TableMeta; form: FormMeta; solution?: string }
   | { kind: "events"; client: Client; form: FormMeta }
   | { kind: "event"; client: Client; event: EventMeta }
   | { kind: "handler"; client: Client; event: EventMeta; handler: HandlerMeta }
@@ -92,7 +92,7 @@ export class MetadataTree implements vscode.TreeDataProvider<MetaNode> {
         }
         const visible: MetaNode[] = columns
           .filter((column) => !column.attributeOf)
-          .map((column) => ({ kind: "column", client: node.client, table: node.table, column }));
+          .map((column) => ({ kind: "column", client: node.client, table: node.table, column, solution: node.solution }));
         return visible.length ? visible : [{ kind: "message", text: "No columns in this solution", icon: "info" }];
       }
       case "column":
@@ -110,7 +110,7 @@ export class MetadataTree implements vscode.TreeDataProvider<MetaNode> {
           forms = forms.filter((form) => included.has(form.id.toLowerCase()));
         }
         if (!forms.length) return [{ kind: "message", text: node.solution ? "No forms in this solution" : "No active forms", icon: "info" }];
-        return forms.map((form) => ({ kind: "form", client: node.client, table: node.table, form }));
+        return forms.map((form) => ({ kind: "form", client: node.client, table: node.table, form, solution: node.solution }));
       }
       case "form": {
         const out: MetaNode[] = [];
@@ -166,6 +166,8 @@ export class MetadataTree implements vscode.TreeDataProvider<MetaNode> {
       case "columns": {
         const item = new vscode.TreeItem("Columns", C.Collapsed);
         item.iconPath = new vscode.ThemeIcon("symbol-field");
+        // Under a solution's table, + adds more of the table's columns to that solution.
+        if (node.solution) item.contextValue = "meta.columns.solution";
         return item;
       }
       case "column": {
@@ -189,6 +191,7 @@ export class MetadataTree implements vscode.TreeDataProvider<MetaNode> {
       case "forms": {
         const item = new vscode.TreeItem("Forms", C.Collapsed);
         item.iconPath = new vscode.ThemeIcon("window");
+        if (node.solution) item.contextValue = "meta.forms.solution";
         return item;
       }
       case "form": {

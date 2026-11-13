@@ -13,12 +13,27 @@ export const SCAN_IGNORE = new Set([
   "jsconfig.json", ".lantern",
 ]);
 
+/** Notepad and PowerShell save JSON with a byte order mark, which JSON.parse rejects. */
 export function readJson<T>(file: string): T {
-  return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+  return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")) as T;
 }
 
+/**
+ * Writes a temp file and renames it over the target, so no reader sees half a file: the global
+ * tenants file is shared by every VS Code window, and a torn one makes every tenant vanish.
+ */
 export function writeJson(file: string, data: unknown): void {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+  const text = JSON.stringify(data, null, 2) + "\n";
+  const target = fs.existsSync(file) ? fs.realpathSync(file) : file; // a symlinked config stays a symlink
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  try {
+    fs.renameSync(tmp, target);
+  } catch {
+    // Windows refuses the rename while another program has the file open without delete sharing.
+    fs.rmSync(tmp, { force: true });
+    fs.writeFileSync(target, text);
+  }
 }
 
 export function isDirectory(p: string): boolean {

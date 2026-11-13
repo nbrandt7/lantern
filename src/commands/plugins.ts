@@ -10,14 +10,15 @@ import { compareTrees, decompileProject, findIlspy, installIlspy, pluginCsproj, 
 import { UserError } from "../core/errors";
 import { isInside } from "../core/files";
 import {
-  chooseTarget, customAssemblies, downloadAssembly, OrgAssembly, PackageInfo, planUpdate, pushPackage, PushResult, readPackage, registerAssembly,
+  chooseTarget, customAssemblies, downloadAssembly, OrgAssembly, PackageInfo, planUpdate, publisherPrefix, pushPackage, PushResult, readPackage, registerAssembly,
   RegisteredAssembly, registeredAssemblies, RegisteredPackage, registeredPackage, RegisteredType, registeredTypes, checkRemovals, RemovalCheck, stepBackup, UpdatePlan, updateAssembly,
+  assemblyInPackage, deployedInPackage, stalePackageReason, versionOf,
 } from "../core/pluginRegistration";
 import { forgetOrgPlugins, localVersion, projectForAssembly } from "../core/pluginStatus";
+import { askAssemblyDetails, askPackageDetails } from "./pluginProperties";
 import { Cancellation, run } from "../core/process";
-import { assemblyNameOf, findBuildOutput, findPluginProjects, PluginProject, pluginIdFor, projectForFile } from "../core/solutions";
+import { assemblyNameOf, BuildOutput, clearBuiltPackages, findBuildOutput, findBuildOutputs, findPluginProjects, PluginProject, pluginIdFor, projectForFile } from "../core/solutions";
 import { findKeysWithToken, generateKeyFile, readKeyFile, signingKeyOf, useSigningKey } from "../core/strongname";
-import { readZip } from "../core/zip";
 import { dataverseFor } from "../ui/auth";
 import { clientForPath, confirmProtected, resolveClient, settings, withProgress, workspaceRoots } from "../ui/context";
 import { forgetRegisteredSteps } from "../ui/editor";
@@ -48,13 +49,13 @@ export async function pushPlugin(arg: unknown, onChanged: Changed = () => undefi
   if (!(await confirmProtected(client, `Push ${projects.length === 1 ? projects[0].assembly : plural(projects.length, "plug-in")}`))) return;
 
   const summaries: string[] = [];
-  const newPlugins: Array<{ assembly: string; typeName: string }> = [];
+  const newPlugins: Array<{ assembly: string; typeName: string; typeId: string }> = [];
   try {
     for (const p of projects) {
       const r = await pushProject(client, p);
       if (!r) break;
       summaries.push(r.summary);
-      newPlugins.push(...r.newPlugins.map((typeName) => ({ assembly: r.assembly, typeName })));
+      newPlugins.push(...r.newPlugins.map((t) => ({ assembly: r.assembly, typeName: t.typeName, typeId: t.id })));
     }
   } finally {
     forgetOrgPlugins(client);
@@ -69,18 +70,21 @@ export async function pushPlugin(arg: unknown, onChanged: Changed = () => undefi
       client,
       assembly: newPlugins[0].assembly,
       typeName: newPlugins.length === 1 ? newPlugins[0].typeName : undefined,
+      // The type just registered: a separately registered version has a type with the same name as the old one's.
+      typeId: newPlugins.length === 1 ? newPlugins[0].typeId : undefined,
     });
   }
 }
 
 type Inspected =
   | { kind: "assembly"; content: Buffer; meta: AssemblyMetadata; target?: RegisteredAssembly; types: RegisteredType[]; plan: UpdatePlan }
-  | { kind: "package"; content: Buffer; pkg: PackageInfo; existing?: RegisteredPackage };
+  /** assembly and dll: the project's assembly and its DLL inside the package. */
+  | { kind: "package"; content: Buffer; pkg: PackageInfo; existing?: RegisteredPackage; assembly: string; dll?: Buffer };
 
 interface Pushed {
   assembly: string;
   summary: string;
-  newPlugins: string[];
+  newPlugins: Array<{ id: string; typeName: string }>;
 }
 
 async function pushProject(client: Client, p: PluginProject): Promise<Pushed | undefined> {
@@ -125,7 +129,9 @@ async function pushProject(client: Client, p: PluginProject): Promise<Pushed | u
   if (!target) {
     const solution = await pickSolution(client, `${meta.name} ${meta.version}`);
     if (solution === undefined) return undefined;
-    const result = await withProgress(`Registering ${meta.name} in ${env(client)}`, (ctx) => registerAssembly(dv, meta, content, { solution: solution || undefined, log: ctx.log }));
+    const details = await askAssemblyDetails(meta, env(client));
+    if (!details) return undefined;
+    const result = await withProgress(`Registering ${meta.name} in ${env(client)}`, (ctx) => registerAssembly(dv, meta, content, { solution: solution || undefined, details, log: ctx.log }));
     if (!result) return undefined;
     client.config.plugins[meta.name] = result.assemblyId;
     client.save();
@@ -167,11 +173,7 @@ async function pushProject(client: Client, p: PluginProject): Promise<Pushed | u
     if (total) {
       const backup = await withProgress("Saving the steps", () => stepBackup(dv, checks));
       if (!backup) return undefined;
-      const dir = path.join(client.dir, ".pull-backup");
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, `unregistered-steps-${meta.name}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-      fs.writeFileSync(file, JSON.stringify({ environment: client.config.org, assembly: meta.name, steps: backup }, null, 2));
-      excludeLocally(client.dir);
+      const file = writeStepBackup(client, meta.name, { assembly: meta.name }, backup);
       backupNote = ` The steps were saved to ${rel(client, file)}.`;
     }
     removals = checks;
@@ -196,10 +198,23 @@ async function pushProject(client: Client, p: PluginProject): Promise<Pushed | u
   return { assembly: meta.name, summary: parts.join(" "), newPlugins: pluginTypes(result) };
 }
 
+/** Saves the full rows of steps about to be unregistered (from stepBackup) in .pull-backup, kept out of git. Returns the file. */
+export function writeStepBackup(client: Client, name: string, about: Record<string, string>, steps: unknown[]): string {
+  const dir = path.join(client.dir, ".pull-backup");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `unregistered-steps-${name.replace(/[^\w.-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  fs.writeFileSync(file, JSON.stringify({ environment: client.config.org, ...about, steps }, null, 2));
+  excludeLocally(client.dir);
+  return file;
+}
+
 const shortName = (typeName: string) => typeName.split(/[.+]/).pop() ?? typeName;
-const pluginTypes = (r: PushResult) => r.newTypes.filter((t) => t.kind === "plugin").map((t) => t.typeName);
+const pluginTypes = (r: PushResult) => r.newTypes.filter((t) => t.kind === "plugin").map((t) => ({ id: t.id, typeName: t.typeName }));
 
 async function build(ctx: { log: (t: string) => void; token?: Cancellation }, client: Client, p: PluginProject, configuration: string): Promise<void> {
+  // An incremental build of a package project recompiles the DLL but keeps the old .nupkg; without it, it packs again.
+  const cleared = clearBuiltPackages(p, configuration);
+  if (cleared.length) ctx.log(`Deleted the last build's package so this build makes a new one: ${cleared.map((f) => rel(client, f)).join(", ")}\n`);
   ctx.log(`> dotnet build ${rel(client, p.project)} -c ${configuration}\n`);
   const r = await run(settings().dotnetPath, ["build", p.project, "-c", configuration], { onOutput: ctx.log, token: ctx.token });
   if (r.missing) throw new UserError("The .NET SDK (dotnet) isn't installed or isn't on your PATH.");
@@ -211,14 +226,27 @@ async function inspect(client: Client, dv: DataverseClient, p: PluginProject): P
   return withProgress(`Building ${p.assembly}`, async (ctx, progress) => {
     progress.report({ message: `dotnet build (${configuration})...` });
     await build(ctx, client, p, configuration);
-    const output = findBuildOutput(p, configuration);
+    const output = await chooseBuildOutput(client, dv, p, configuration, ctx.log);
+    if (output === "cancelled") return undefined;
     if (!output) throw new UserError(`Couldn't find the built ${p.assembly}.dll or .nupkg under bin/${configuration}.`);
     const content = fs.readFileSync(output.file);
+    const written = fs.statSync(output.file).mtimeMs;
     progress.report({ message: `checking ${env(client)}...` });
     if (output.type === "Nuget") {
       const pkg = readPackage(content);
-      return { kind: "package", content, pkg, existing: await registeredPackage(dv, pkg, pluginIdFor(client, pkg.id) ?? pluginIdFor(client, p.assembly)) };
+      // The package has to hold the DLL this build made, or the push would deploy an old build and say it worked.
+      const built = findBuildOutputs(p, configuration).dll;
+      const stale = stalePackageReason(
+        { name: rel(client, output.file), content, writtenAt: written },
+        built ? { content: fs.readFileSync(built), writtenAt: fs.statSync(built).mtimeMs } : undefined,
+        p.assembly
+      );
+      if (stale) throw new UserError(`${stale} Lantern didn't push it. Delete the .nupkg (or rebuild the project) and push again.`);
+      const dll = assemblyInPackage(content, p.assembly);
+      ctx.log(`Pushing ${rel(client, output.file)} (written ${new Date(written).toLocaleString()}): ${pkg.id} ${pkg.version}, with ${p.assembly} ${dll ? versionOf(dll) : "(not found)"} inside.\n`);
+      return { kind: "package", content, pkg, assembly: p.assembly, dll, existing: await registeredPackage(dv, pkg, pluginIdFor(client, pkg.id) ?? pluginIdFor(client, p.assembly)) };
     }
+    ctx.log(`Pushing ${rel(client, output.file)} (written ${new Date(written).toLocaleString()}).\n`);
     let meta: AssemblyMetadata;
     try {
       meta = readAssembly(content);
@@ -233,28 +261,110 @@ async function inspect(client: Client, dv: DataverseClient, p: PluginProject): P
   });
 }
 
+/**
+ * Which build output to push. A project that packages on build has both a .nupkg and the .dll,
+ * and they register differently (a package owns its assemblies). The org decides when it can:
+ * a registered assembly keeps getting the .dll, a registered package the .nupkg. When neither
+ * is registered yet (or both are), the tenant's pluginDeploy choice applies, asked once.
+ */
+export async function chooseBuildOutput(
+  client: Client,
+  dv: DataverseClient,
+  p: PluginProject,
+  configuration: string,
+  log?: (text: string) => void
+): Promise<BuildOutput | "cancelled" | undefined> {
+  const outputs = findBuildOutputs(p, configuration);
+  if (!outputs.nupkg || !outputs.dll) return findBuildOutput(p, configuration);
+  const asPackage: BuildOutput = { file: outputs.nupkg, type: "Nuget" };
+  const asAssembly: BuildOutput = { file: outputs.dll, type: "Assembly" };
+  const pkg = readPackage(fs.readFileSync(outputs.nupkg));
+  const [registered, assemblies] = await Promise.all([
+    registeredPackage(dv, pkg, pluginIdFor(client, pkg.id)),
+    registeredAssemblies(dv, p.assembly, pluginIdFor(client, p.assembly)),
+  ]);
+  const standalone = [assemblies.byId, ...assemblies.byName].some((a) => a && !a._packageid_value);
+  if (standalone && !registered) {
+    log?.(`${p.assembly} is registered as an assembly in ${env(client)}: pushing the .dll, not the package.\n`);
+    return asAssembly;
+  }
+  if (registered && !standalone) {
+    log?.(`${pkg.id} is registered as a plug-in package in ${env(client)}: pushing the .nupkg.\n`);
+    return asPackage;
+  }
+  let choice = client.config.pluginDeploy;
+  if (!choice) {
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: "Plug-in assembly (.dll)", detail: "Registers the assembly itself, like the Plugin Registration Tool's Register New Assembly. The usual choice.", value: "assembly" as const },
+        { label: "Plug-in package (.nupkg)", detail: "Registers a package; Dataverse registers the assembly inside it. Needed when the plug-in has dependent assemblies.", value: "package" as const },
+      ],
+      { title: `${p.assembly} built both a .dll and a .nupkg. Which should Lantern deploy for ${client.name}?`, placeHolder: "Remembered in the tenant's settings (pluginDeploy)", ignoreFocusOut: true }
+    );
+    if (!pick) return "cancelled";
+    choice = pick.value;
+    client.config.pluginDeploy = choice;
+    client.save();
+  }
+  return choice === "package" ? asPackage : asAssembly;
+}
+
 async function pushPackageFlow(client: Client, dv: DataverseClient, ins: Extract<Inspected, { kind: "package" }>): Promise<Pushed | undefined> {
   const { pkg, existing, content } = ins;
   if (existing?.ismanaged) {
     void vscode.window.showErrorMessage(`The ${pkg.id} package in ${env(client)} came from a managed solution, so it can't be updated here.`);
     return undefined;
   }
+  if (existing && ins.dll) {
+    const dll = ins.dll;
+    // A check, not a requirement: if it can't be made, the push goes ahead as before.
+    const same = await withProgress(`Checking ${pkg.id} in ${env(client)}`, () => deployedInPackage(dv, existing.pluginpackageid, ins.assembly, dll).catch(() => undefined), { quiet: true });
+    if (same) {
+      const button = "Push Anyway";
+      const choice = await vscode.window.showWarningMessage(
+        `${env(client)} already has this build of ${ins.assembly} (${same}) in ${pkg.id}. Pushing it again changes nothing.`,
+        { modal: true, detail: `If you changed the code, check that you built ${settings().buildConfiguration} (the configuration Lantern builds and pushes, lantern.plugins.buildConfiguration) and that the build succeeded.` },
+        button
+      );
+      if (choice !== button) return undefined;
+    }
+  }
   let solution: string | undefined;
+  let names: { name: string; uniqueName: string } | undefined;
   if (!existing) {
     solution = await pickSolution(client, `package ${pkg.id} ${pkg.version}`);
     if (solution === undefined) return undefined;
+    // Dataverse refuses a package whose unique name doesn't start with a publisher prefix ("contoso_").
+    const prefix = await withProgress(`Looking up the publisher prefix of ${solution || "the Default solution"}`, () => publisherPrefix(dv, solution || undefined));
+    if (!prefix && !(await useDefaultPrefix(client, solution))) return undefined;
+    names = await askPackageDetails(pkg, prefix || "new", env(client));
+    if (!names) return undefined;
   }
-  const result = await withProgress(`${existing ? "Pushing" : "Registering"} ${pkg.id} ${pkg.version}`, () => pushPackage(dv, pkg, content, existing, { solution: solution || undefined }));
+  const result = await withProgress(`${existing ? "Pushing" : "Registering"} ${pkg.id} ${pkg.version}`, () =>
+    pushPackage(dv, pkg, content, existing, { solution: solution || undefined, name: names?.name, uniqueName: names?.uniqueName })
+  );
   if (!result) return undefined;
   if (result.created) {
     client.config.plugins[pkg.id] = result.id;
     client.save();
   }
+  const shown = result.uniqueName.toLowerCase() === pkg.id.toLowerCase() ? pkg.id : `${pkg.id} (${result.uniqueName})`;
   return {
     assembly: pkg.id,
-    summary: `${result.created ? "Registered" : "Pushed"} plug-in package ${pkg.id} ${pkg.version} ${result.created ? "in" : "to"} ${env(client)}. Dataverse registers the classes inside it.`,
+    summary: `${result.created ? "Registered" : "Pushed"} plug-in package ${shown} ${pkg.version} ${result.created ? "in" : "to"} ${env(client)}. Dataverse registers the classes inside it.`,
     newPlugins: [],
   };
+}
+
+/** The publisher's prefix couldn't be read: say so, and let the user go on with new_ (changeable in the next step). */
+async function useDefaultPrefix(client: Client, solution: string | undefined): Promise<boolean> {
+  const go = "Continue with new_";
+  const choice = await vscode.window.showWarningMessage(
+    `Lantern couldn't read the publisher prefix of ${solution || "the Default solution"} in ${env(client)}.`,
+    { modal: true, detail: "Dataverse needs the package's unique name to start with its solution publisher's prefix. You can go on with new_ (the default publisher's) and change it in the next step." },
+    go
+  );
+  return choice === go;
 }
 
 async function pickSolution(client: Client, what: string): Promise<string | undefined> {
@@ -586,8 +696,16 @@ export async function getPluginSource(arg: unknown, onChanged: Changed = () => u
   void vscode.window.showInformationMessage(notes.filter(Boolean).join(" "));
 }
 
+/** The package's own ID and version, from its .nuspec: its unique name in Dataverse usually has the publisher prefix in front. */
 async function packageInfo(dv: DataverseClient, id: string): Promise<{ id: string; version: string }> {
-  const row = await dv.getJson<{ uniquename: string; version: string }>(`pluginpackages(${id})?$select=uniquename,version`);
+  const row = await dv.getJson<{ uniquename: string; version: string; content?: string | null }>(`pluginpackages(${id})?$select=uniquename,version,content`);
+  if (row.content) {
+    try {
+      return readPackage(Buffer.from(row.content, "base64"));
+    } catch {
+      // not a readable .nupkg: fall back to what Dataverse says
+    }
+  }
   return { id: row.uniquename, version: row.version };
 }
 
@@ -613,16 +731,22 @@ export async function compareDeployed(arg: unknown): Promise<void> {
     if (!deployedRow) throw new UserError(`${p.assembly} isn't registered in ${env(client)}.`);
     progress.report({ message: "building yours..." });
     await build(ctx, client, p, configuration);
-    const output = findBuildOutput(p, configuration);
+    const output = findBuildOutput(p, configuration, "Assembly");
     if (!output) throw new UserError(`Couldn't find the built ${p.assembly} under bin/${configuration}.`);
     const localDll = output.type === "Nuget" ? dllFromPackage(fs.readFileSync(output.file), p.assembly) : fs.readFileSync(output.file);
     progress.report({ message: "downloading the deployed one..." });
     const deployed = await downloadAssembly(dv, { ...deployedRow });
-    const dir = path.join(os.tmpdir(), "lantern-compare", `${client.name}-${p.assembly}`.replace(/[^\w.-]/g, "_"));
-    fs.rmSync(dir, { recursive: true, force: true });
+    // A folder per compare: two at once (or a second before the first is closed) used to share one and delete each other's files.
+    const base = path.join(os.tmpdir(), "lantern-compare");
+    fs.mkdirSync(base, { recursive: true });
+    // Earlier compares' folders go once they're a day old; a compare still open is newer than that.
+    for (const old of fs.readdirSync(base)) {
+      const full = path.join(base, old);
+      try { if (Date.now() - fs.statSync(full).mtimeMs > 86_400_000) fs.rmSync(full, { recursive: true, force: true }); } catch { /* in use or gone */ }
+    }
+    const dir = fs.mkdtempSync(path.join(base, `${client.name}-${p.assembly}-`.replace(/[^\w.-]/g, "_")));
     const deployedDir = path.join(dir, env(client).replace(/[^\w.-]/g, "_"));
     const localDir = path.join(dir, "your build");
-    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "deployed.dll"), deployed.dll);
     fs.writeFileSync(path.join(dir, "local.dll"), localDll);
     progress.report({ message: "decompiling both..." });
@@ -667,7 +791,7 @@ export async function compareDeployed(arg: unknown): Promise<void> {
 }
 
 function dllFromPackage(nupkg: Buffer, assembly: string): Buffer {
-  const entry = readZip(nupkg).find((e) => e.name.toLowerCase().endsWith(`/${assembly.toLowerCase()}.dll`));
-  if (!entry) throw new UserError(`${assembly}.dll isn't in the built package.`);
-  return entry.data;
+  const dll = assemblyInPackage(nupkg, assembly);
+  if (!dll) throw new UserError(`${assembly}.dll isn't in the built package.`);
+  return dll;
 }

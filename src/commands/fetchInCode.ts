@@ -103,7 +103,10 @@ export function registerFetchInCode(): vscode.Disposable[] {
         void vscode.window.showWarningMessage(`Couldn't update ${path.basename(origin.file)}.`);
         return;
       }
-      origin.text = edited;
+      // What the code holds now ({{x}} placeholders may have become $@ holes), so the next Write Back still finds it.
+      const now = findFetchLiterals(source.getText(), origin.language).find((l) => l.start === lit.start);
+      origin.text = now?.text ?? edited;
+      if (now) origin.kind = now.kind;
       // JavaScript is written back as a template literal from now on.
       if (origin.language === "js") origin.kind = "template";
       await vscode.window.showTextDocument(source, { selection: new vscode.Range(source.positionAt(lit.start), source.positionAt(lit.start)) });

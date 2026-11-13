@@ -61,6 +61,36 @@ function diffKeys<T>(a: Map<string, T>, b: Map<string, T>, same: (x: T, y: T) =>
   return out;
 }
 
+/**
+ * Both sides' items by name, kept apart where a name repeats on either side, so two steps
+ * (or forms) that share one aren't compared as one: those names get `detail` added, and
+ * "#2", "#3" when that's still the same, numbered in ID order (an imported component keeps
+ * its ID, so the same one pairs up in both environments).
+ */
+function byName<T extends { id: string }>(a: T[], b: T[], name: (x: T) => string, detail?: (x: T) => string): [Map<string, T>, Map<string, T>] {
+  const repeated = new Set<string>();
+  for (const list of [a, b]) {
+    const seen = new Set<string>();
+    for (const x of list) {
+      if (seen.has(name(x))) repeated.add(name(x));
+      seen.add(name(x));
+    }
+  }
+  const keyed = (list: T[]) => {
+    const keys = new Map<T, string>();
+    const used = new Set<string>();
+    for (const x of [...list].sort((p, q) => (p.id ?? "").localeCompare(q.id ?? ""))) {
+      const base = repeated.has(name(x)) && detail ? `${name(x)} (${detail(x)})` : name(x);
+      let key = base;
+      for (let n = 2; used.has(key); n++) key = `${base} #${n}`;
+      used.add(key);
+      keys.set(x, key);
+    }
+    return new Map(list.map((x) => [keys.get(x) ?? name(x), x]));
+  };
+  return [keyed(a), keyed(b)];
+}
+
 const colDiff = (x: ColumnMeta, y: ColumnMeta): string | undefined => {
   const parts: string[] = [];
   if (x.type !== y.type) parts.push(`type ${x.type} vs ${y.type}`);
@@ -137,8 +167,8 @@ export async function compareEnvironments(a: Side, b: Side, solution: string, on
       }
       const cols = (list: ColumnMeta[]) => new Map(list.filter((c) => !c.attributeOf).map((c) => [`${t}.${c.logicalName}`, c]));
       result.differences.push(...diffKeys(cols(parts.a.columns), cols(parts.b.columns), colDiff, "Column"));
-      const forms = (list: FormMeta[]) => new Map(list.map((f) => [`${t}: ${f.name} (${f.type})`, f]));
-      result.differences.push(...diffKeys(forms(parts.a.forms), forms(parts.b.forms), formDiff, "Form"));
+      const [formsA, formsB] = byName(parts.a.forms, parts.b.forms, (f) => `${t}: ${f.name} (${f.type})`);
+      result.differences.push(...diffKeys(formsA, formsB, formDiff, "Form"));
     }
   }
 
@@ -171,8 +201,10 @@ export async function compareEnvironments(a: Side, b: Side, solution: string, on
   const steps = await bothSides(() => fetchSteps(a.dv), () => fetchSteps(b.dv), labels);
   if ("error" in steps) skip("Plug-in steps", steps.error);
   else {
-    result.counts.steps = new Set([...steps.a, ...steps.b].map((s) => s.name)).size;
-    result.differences.push(...diffKeys(new Map(steps.a.map((s) => [s.name, s])), new Map(steps.b.map((s) => [s.name, s])), stepDiff, "Plug-in step"));
+    // Pre- and post-operation steps of one plug-in on one message share the default name.
+    const [stepsA, stepsB] = byName(steps.a, steps.b, (s) => s.name, (s) => `${s.stage}, ${s.mode}`);
+    result.counts.steps = new Set([...stepsA.keys(), ...stepsB.keys()]).size;
+    result.differences.push(...diffKeys(stepsA, stepsB, stepDiff, "Plug-in step"));
   }
   const vars = await bothSides(() => fetchEnvVars(a.dv), () => fetchEnvVars(b.dv), labels);
   if ("error" in vars) skip("Environment variables", vars.error);

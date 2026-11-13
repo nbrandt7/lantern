@@ -18,15 +18,22 @@ export function formScript(o: FormScriptOptions): string {
   const formContext = o.formType
     ? `    /** @type {${o.formType}} */\n    const formContext = executionContext.getFormContext();`
     : `    const formContext = executionContext.getFormContext();`;
-  const full = `${o.namespace}.${o.entityPascal}`;
+  // Each part has to be an identifier ("365Retail" isn't) and declared in turn ("var Contoso.Sales" doesn't parse).
+  const parts = o.namespace
+    .split(".")
+    .filter(Boolean)
+    .map((part) => part.replace(/[^$\p{ID_Continue}]/gu, "_"))
+    .map((part) => (/^[$_\p{ID_Start}]/u.test(part) ? part : `_${part}`));
+  const nested = parts.slice(1).map((_, i) => parts.slice(0, i + 2).join("."));
+  const full = `${parts.join(".")}.${o.entityPascal}`;
 
   return `// Form script for ${o.entity}.
 // Register handlers on the form as ${full}.onLoad / ${full}.onSave
 // and tick "Pass execution context as first parameter".
 
 /** @type {Record<string, any>} */
-var ${o.namespace} = ${o.namespace} || {};
-
+var ${parts[0]} = ${parts[0]} || {};
+${nested.map((n) => `${n} = ${n} || {};\n`).join("")}
 ${full} = (function () {
   "use strict";
 

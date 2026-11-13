@@ -430,7 +430,9 @@ export interface LoadOptions {
  */
 export class MetadataService {
   private readonly memory = new Map<string, unknown>();
-  private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly inFlight = new Map<string, { promise: Promise<unknown>; silent: boolean }>();
+  /** Bumped by forget and clear, so a load that started before a Refresh doesn't store its older answer. */
+  private generation = 0;
 
   constructor(private readonly dir: string, private readonly client: (silent: boolean) => DataverseClient) {}
 
@@ -469,23 +471,29 @@ export class MetadataService {
     }
   }
 
-  /** Drops cached entries whose key starts with the prefix (e.g. "solution-tables/"). */
+  /** Drops cached entries whose key starts with the prefix (e.g. "solution-tables/"), or the one entry named by it ("tables"). */
   forget(prefix: string): void {
+    this.generation++;
     for (const key of [...this.memory.keys()]) if (key.startsWith(prefix)) this.memory.delete(key);
+    for (const key of [...this.inFlight.keys()]) if (key.startsWith(prefix)) this.inFlight.delete(key);
     const dir = path.join(this.dir, prefix);
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(this.fileFor(prefix), { force: true });
   }
 
   /** Drops one table's cached columns and forms, or everything when no table is given. */
   clear(table?: string): void {
+    this.generation++;
     if (table) {
       for (const key of [`columns/${table}`, `forms/${table}`]) {
         this.memory.delete(key);
+        this.inFlight.delete(key);
         fs.rmSync(this.fileFor(key), { force: true });
       }
       return;
     }
     this.memory.clear();
+    this.inFlight.clear();
     fs.rmSync(this.dir, { recursive: true, force: true });
   }
 
@@ -494,13 +502,17 @@ export class MetadataService {
       const hit = this.cached<T>(key);
       if (hit !== undefined) return hit;
     }
-    const pending = this.inFlight.get(key) as Promise<T> | undefined;
+    const pending = this.inFlight.get(key);
     if (pending) {
+      const shared = pending.promise as Promise<T>;
       // A silent load (from typing) mustn't fail a visible one that's allowed to sign in: retry it.
-      return o.silent ? pending : pending.catch(() => this.load(key, fetcher, { ...o, force: true }));
+      // A visible load that failed already asked, so its waiters share the failure rather than each asking again.
+      return o.silent || !pending.silent ? shared : shared.catch(() => this.load(key, fetcher, { ...o, force: true }));
     }
-    const promise = fetcher(this.client(!!o.silent))
+    const generation = this.generation;
+    const promise: Promise<T> = fetcher(this.client(!!o.silent))
       .then((data) => {
+        if (generation !== this.generation) return data;
         this.memory.set(key, data);
         try {
           const file = this.fileFor(key);
@@ -512,8 +524,10 @@ export class MetadataService {
         }
         return data;
       })
-      .finally(() => this.inFlight.delete(key));
-    this.inFlight.set(key, promise);
+      .finally(() => {
+        if (this.inFlight.get(key)?.promise === promise) this.inFlight.delete(key);
+      });
+    this.inFlight.set(key, { promise, silent: !!o.silent });
     return promise;
   }
 
@@ -543,6 +557,20 @@ export function guessTable(fileName: string, tables: TableMeta[]): string | unde
     if ((stripped.includes(candidate) || base.includes(candidate)) && (!best || candidate.length > best.replace(/^[a-z0-9]{2,8}_/, "").length)) best = n;
   }
   return best;
+}
+
+/**
+ * The logical names of a table's columns that are in a solution, for pre-picking them.
+ * `everything` when the solution includes the table with all its columns (nothing to single out).
+ */
+export async function solutionColumnNames(svc: MetadataService, table: TableMeta, solution: string): Promise<{ everything: boolean; names: Set<string> }> {
+  const components = await svc.solutionTableComponents(solution);
+  if (components.allTables.includes(table.metadataId.toLowerCase())) return { everything: true, names: new Set() };
+  let columns = await svc.columns(table.logicalName);
+  // Older metadata caches predate column component IDs.
+  if (columns.some((c) => !c.metadataId)) columns = await svc.columns(table.logicalName, { force: true });
+  const ids = new Set(components.columns);
+  return { everything: false, names: new Set(columns.filter((c) => c.metadataId && ids.has(c.metadataId.toLowerCase())).map((c) => c.logicalName)) };
 }
 
 /** A table named in an XrmDefinitelyTyped annotation, e.g. Form.account.Main.Information. */

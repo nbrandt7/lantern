@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { findFiles, findUp, isDirectory, SKIP_DIRS, toPosix } from "./files";
+import { findFiles, findUp, isDirectory, isInside, SKIP_DIRS, toPosix } from "./files";
 import { Client } from "./clients";
 
 // ---------- solutions ----------
@@ -77,18 +77,72 @@ export function pluginIdFor(client: Client, assembly: string): string | undefine
   return key ? known[key] : undefined;
 }
 
-/** Newest build output for a plug-in project: a .nupkg (plug-in package) or the assembly .dll. */
-export function findBuildOutput(p: PluginProject, configuration: string): { file: string; type: "Nuget" | "Assembly" } | undefined {
+export interface BuildOutput {
+  file: string;
+  type: "Nuget" | "Assembly";
+}
+
+/**
+ * Tests a lower-case file name for this project's package files: "<id>.<version>.nupkg" (or .nuspec),
+ * where the id is the PackageId (often with a publisher prefix) or the assembly name. The version has
+ * to follow the id, so Contoso.Plugins doesn't take Contoso.Plugins.Extra's package, nor a .symbols.nupkg.
+ */
+function packageFileTest(p: PluginProject, extension: ".nupkg" | ".nuspec"): (lowerName: string) => boolean {
+  const packageId = fs.readFileSync(p.project, "utf8").match(/<PackageId>\s*([^<]+?)\s*<\/PackageId>/i)?.[1].toLowerCase();
+  const ids = [p.assembly.toLowerCase(), ...(packageId ? [packageId] : [])];
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(${ids.map(escape).join("|")})\\.\\d+(\\.\\d+)*([-+][\\w.-]*)?${escape(extension)}$`);
+  return (n) => re.test(n);
+}
+
+/** The newest build outputs of a plug-in project: its .nupkg (plug-in package) and its assembly .dll, whichever exist. */
+export function findBuildOutputs(p: PluginProject, configuration: string): { nupkg?: string; dll?: string } {
   const bin = path.join(path.dirname(p.project), "bin", configuration);
   const lower = p.assembly.toLowerCase();
   const newest = (test: (name: string) => boolean) =>
-    findAll(bin, test).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
-  // Plug-in packages are named after the PackageId (often with a publisher prefix), not the assembly.
-  const packageId = fs.readFileSync(p.project, "utf8").match(/<PackageId>\s*([^<]+?)\s*<\/PackageId>/i)?.[1].toLowerCase();
-  const nupkg = newest((n) => (n.startsWith(`${lower}.`) || (!!packageId && n.startsWith(`${packageId}.`))) && n.endsWith(".nupkg"));
-  if (nupkg) return { file: nupkg, type: "Nuget" };
-  const dll = newest((n) => n === `${lower}.dll`);
-  return dll ? { file: dll, type: "Assembly" } : undefined;
+    findAll(bin, test).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] as string | undefined;
+  return {
+    nupkg: newest(packageFileTest(p, ".nupkg")),
+    dll: newest((n) => n === `${lower}.dll`),
+  };
+}
+
+/** The project makes its .nupkg when it builds: a plug-in package project (Microsoft.PowerApps.MSBuild.Plugin), or GeneratePackageOnBuild. */
+export function packsOnBuild(p: PluginProject): boolean {
+  const text = fs.readFileSync(p.project, "utf8");
+  return /Microsoft\.PowerApps\.MSBuild\.Plugin/i.test(text) || /<GeneratePackageOnBuild>\s*true\s*</i.test(text);
+}
+
+/**
+ * Deletes the .nupkg (and the .nuspec it was made from) that the last build of a package project left.
+ * The plug-in package targets add the DLL to the package from the publish folder, which NuGet doesn't
+ * count as an input, so an incremental build that recompiles the DLL keeps the old package as "up to
+ * date". With the package gone, the build has to make a new one. Returns the files deleted; a file that
+ * can't be deleted (open elsewhere) is left, and the check after the build catches a stale one.
+ */
+export function clearBuiltPackages(p: PluginProject, configuration: string): string[] {
+  if (!packsOnBuild(p)) return [];
+  const dir = path.dirname(p.project);
+  const stale = [
+    ...findAll(path.join(dir, "bin", configuration), packageFileTest(p, ".nupkg")),
+    ...findAll(path.join(dir, "obj", configuration), packageFileTest(p, ".nuspec")),
+  ];
+  return stale.filter((file) => {
+    try {
+      fs.rmSync(file);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** One build output: the preferred kind when the project built both, else whichever it built. */
+export function findBuildOutput(p: PluginProject, configuration: string, prefer: BuildOutput["type"] = "Nuget"): BuildOutput | undefined {
+  const { nupkg, dll } = findBuildOutputs(p, configuration);
+  const asPackage = nupkg ? { file: nupkg, type: "Nuget" as const } : undefined;
+  const asAssembly = dll ? { file: dll, type: "Assembly" as const } : undefined;
+  return prefer === "Assembly" ? asAssembly ?? asPackage : asPackage ?? asAssembly;
 }
 
 function findAll(folder: string, test: (lowerName: string) => boolean): string[] {
@@ -143,11 +197,23 @@ export function isWebResourceCandidate(file: string, client: Client): boolean {
   if (!webResourceType(file)) return false;
   const rel = path.relative(client.dir, file);
   if (rel.startsWith("..")) return false;
-  const parts = rel.split(path.sep);
-  if (parts.some((p) => SKIP_DIRS.has(p))) return false;
+  // A configured root can be named like build output ("dist"); only the folders below it are checked.
+  const root = client.config.webResourceRoots.map((r) => path.join(client.dir, r)).find((r) => isInside(file, r));
+  if (path.relative(root ?? client.dir, file).split(path.sep).some((p) => SKIP_DIRS.has(p))) return false;
   const base = path.basename(file).toLowerCase();
   if (base.endsWith(".data.xml") || base === "solution.xml" || base === "customizations.xml") return false;
   return true;
+}
+
+/**
+ * Every web resource candidate in a client. The walk skips build folders, so a configured root
+ * named like one ("dist") is walked on its own as well.
+ */
+export function webResourceFiles(client: Client): string[] {
+  const roots = [client.dir, ...client.config.webResourceRoots.map((r) => path.join(client.dir, r))];
+  const files = new Set<string>();
+  for (const root of roots) for (const f of findFiles(root, (_n, full) => isWebResourceCandidate(full, client))) files.add(f);
+  return [...files];
 }
 
 /**

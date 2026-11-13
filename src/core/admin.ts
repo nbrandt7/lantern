@@ -23,9 +23,13 @@ export interface StepInfo {
   mode: "Synchronous" | "Asynchronous";
   enabled: boolean;
   typeName: string;
+  /** The plug-in type's ID. Two registered versions of an assembly have types with the same name. */
+  typeId: string;
   assembly: string;
   filtering: string;
   rank: number;
+  /** The Plugin Registration Tool's profiler is on: each run writes its context to the trace log. */
+  profiled: boolean;
 }
 
 const STAGE: Record<number, string> = { 10: "Pre-validation", 20: "Pre-operation", 30: "Main operation", 40: "Post-operation" };
@@ -40,11 +44,13 @@ export async function fetchSteps(dv: DataverseClient): Promise<StepInfo[]> {
     statecode: number;
     rank: number;
     filteringattributes: string | null;
+    enablepluginprofiler?: boolean | null;
+    _plugintypeid_value?: string | null;
     sdkmessageid?: { name?: string } | null;
     sdkmessagefilterid?: { primaryobjecttypecode?: string } | null;
     plugintypeid?: { typename?: string; assemblyname?: string } | null;
   }>(
-    "sdkmessageprocessingsteps?$select=name,stage,mode,statecode,rank,filteringattributes" +
+    "sdkmessageprocessingsteps?$select=name,stage,mode,statecode,rank,filteringattributes,enablepluginprofiler,_plugintypeid_value" +
       "&$expand=sdkmessageid($select=name),sdkmessagefilterid($select=primaryobjecttypecode),plugintypeid($select=typename,assemblyname)" +
       "&$filter=customizationlevel eq 1"
   );
@@ -58,9 +64,11 @@ export async function fetchSteps(dv: DataverseClient): Promise<StepInfo[]> {
       mode: r.mode === 1 ? ("Asynchronous" as const) : ("Synchronous" as const),
       enabled: r.statecode === 0,
       typeName: r.plugintypeid?.typename ?? "",
+      typeId: r._plugintypeid_value ?? "",
       assembly: r.plugintypeid?.assemblyname ?? "(no assembly)",
       filtering: r.filteringattributes ?? "",
       rank: r.rank ?? 1,
+      profiled: r.enablepluginprofiler === true,
     }))
     .sort((a, b) => a.assembly.localeCompare(b.assembly) || a.typeName.localeCompare(b.typeName) || a.message.localeCompare(b.message));
 }

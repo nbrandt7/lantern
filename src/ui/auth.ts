@@ -19,12 +19,26 @@ export function useSecrets(s: Secrets): void {
   secrets = s;
 }
 const oldSecretKey = (client: Client) => `lantern.appSecret.${client.name}.${client.envName || "default"}.${client.config.appId}`;
-const secretKey = (client: Client) => {
-  const identity = `${client.config.org}|${client.config.tenant}|${client.envName}|${client.config.appId}`;
-  return `lantern.appSecret.${createHash("sha256").update(identity).digest("hex")}`;
-};
+const hashedSecretKey = (identity: string) => `lantern.appSecret.${createHash("sha256").update(identity).digest("hex")}`;
+/** Not keyed on the environment's name, which Add Environment gives a single org and people rename. */
+const secretKey = (client: Client) => hashedSecretKey(`${client.config.org}|${client.config.tenant}|${client.config.appId}`);
+/** Where earlier versions kept the secret: per environment name ("" before the org had one), then per tenant name. */
+const earlierSecretKeys = (client: Client) => [
+  ...new Set([client.envName, ""].map((env) => hashedSecretKey(`${client.config.org}|${client.config.tenant}|${env}|${client.config.appId}`))),
+  oldSecretKey(client),
+];
 export async function appSecret(client: Client): Promise<string | undefined> {
-  return client.config.appId ? (await secrets?.get(secretKey(client))) ?? (await secrets?.get(oldSecretKey(client))) : undefined;
+  if (!client.config.appId || !secrets) return undefined;
+  const secret = await secrets.get(secretKey(client));
+  if (secret !== undefined) return secret;
+  for (const key of earlierSecretKeys(client)) {
+    const earlier = await secrets.get(key);
+    if (earlier === undefined) continue;
+    // Moved to the current key, so renaming the environment later can't lose it.
+    await secrets.store(secretKey(client), earlier);
+    return earlier;
+  }
+  return undefined;
 }
 export async function storeAppSecret(client: Client, secret: string): Promise<void> {
   if (!secrets) throw new UserError("VS Code's secret storage isn't available.");
@@ -55,6 +69,20 @@ async function appToken(client: Client): Promise<{ token: string; expires: numbe
 }
 /** The Microsoft account each client actually signed in with, for the tree and Environment. */
 const signedIn = new Map<string, string>();
+const signInListeners = new Set<() => void>();
+
+/** Called whenever the account a client is signed in with changes (signed in, switched, forgotten). */
+export function onSignInChanged(listener: () => void): vscode.Disposable {
+  signInListeners.add(listener);
+  return { dispose: () => signInListeners.delete(listener) };
+}
+
+function setSignedIn(key: string, account: string | undefined): void {
+  if (signedIn.get(key) === account) return;
+  if (account === undefined) signedIn.delete(key);
+  else signedIn.set(key, account);
+  for (const l of signInListeners) l();
+}
 
 interface AccountInfo {
   id: string;
@@ -127,7 +155,7 @@ export async function getToken(client: Client, options: { silent?: boolean; fres
     token = r.stdout.trim();
   } else {
     const session = await sessionFor(client, options.silent ?? false);
-    signedIn.set(`${client.name}@${client.orgHost}`, session.account.label);
+    setSignedIn(`${client.name}@${client.orgHost}`, session.account.label);
     token = session.accessToken;
     expires = jwtExpiry(token) ?? expires;
   }
@@ -192,16 +220,43 @@ export async function chooseAccount(client: Client): Promise<string | undefined 
 }
 
 /** chooseAccount's answer when the person picked an app registration. */
+/**
+ * A token for the Global Discovery Service (resource), to list the environments the
+ * client's account can open. Undefined with an app registration: discovery lists
+ * a person's environments, and an app has none.
+ */
+export async function discoveryToken(client: Client, resource: string): Promise<string | undefined> {
+  if (client.config.appId) return undefined;
+  const { authMethod, azPath } = settings();
+  if (authMethod === "azureCli") {
+    const args = ["account", "get-access-token", "--resource", resource, "--query", "accessToken", "-o", "tsv"];
+    if (client.config.tenant) args.push("--tenant", client.config.tenant);
+    const r = await run(azPath, args);
+    return r.code === 0 ? r.stdout.trim() || undefined : undefined;
+  }
+  const scopes = [`${resource}/user_impersonation`];
+  if (client.config.tenant) scopes.push(`VSCODE_TENANT:${client.config.tenant}`);
+  // The account this tenant already uses, so the list is that account's environments.
+  const label = accountInUse(client)?.account;
+  const account = label ? (await microsoftAccounts()).find((a) => sameAccount(a.label, label)) : undefined;
+  const session = await auth().getSession("microsoft", scopes, { createIfNone: true, ...(account ? { account } : {}) });
+  return session?.accessToken;
+}
+
 export const APP_REGISTRATION = "\u0000app";
 
 export function forgetSignIn(client: Client): void {
-  signedIn.delete(`${client.name}@${client.orgHost}`);
+  setSignedIn(`${client.name}@${client.orgHost}`, undefined);
   for (const key of [...cache.keys()]) if (key.includes(`|${client.config.org}|`)) cache.delete(key);
 }
 
 export function dataverseFor(client: Client, options: { silent?: boolean } = {}): DataverseClient {
   if (!client.config.org) throw new UserError(`Set "org" in the ${client.name} tenant configuration first.`);
-  return new DataverseClient(client.config.org, (_org, fresh) => getToken(client, { ...options, fresh }));
+  const org = client.config.org;
+  // A client switches environments in place. A request still running from before a switch keeps
+  // the org it was made for, so it must get that org's token, not the new environment's.
+  const pinned = client.withEnvironment(client.envName);
+  return new DataverseClient(org, (_org, fresh) => getToken(client.config.org === org ? client : pinned, { ...options, fresh }));
 }
 
 export function clearTokenCache(): void {

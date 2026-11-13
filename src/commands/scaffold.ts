@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { Client } from "../core/clients";
 import { findFiles } from "../core/files";
 import { outlineJs } from "../core/codeanalysis";
+import { includeInOldStyleProject } from "../core/csharpClasses";
 import { pluginInit } from "../core/pac";
 import { findPluginProjects, PluginProject } from "../core/solutions";
 import { reportError, resolveClient, withProgress } from "../ui/context";
@@ -181,6 +182,8 @@ export function registerScaffolding(onChanged: () => void): vscode.Disposable[] 
       }
       const usesPluginBase = findFiles(projectDir, (n) => n === "PluginBase.cs").length > 0;
       fs.writeFileSync(file, classTemplate(kind.classKind, projectNamespace(csproj), name.trim(), usesPluginBase && kind.classKind !== "workflow"));
+      // An old-style project builds only the files it lists.
+      includeInOldStyleProject(csproj, [file]);
       await vscode.window.showTextDocument(vscode.Uri.file(file));
     }),
 

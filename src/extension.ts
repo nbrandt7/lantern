@@ -3,10 +3,16 @@ import * as vscode from "vscode";
 import { useClientStore } from "./core/clients";
 import { languageForExtensionless } from "./core/solutions";
 import { configureFolder, initWorkspace, newClient, openClientConfig, openInBrowser } from "./commands/clients";
-import { generateEarlyBound, generateJsTypes } from "./commands/build";
+import { generateJsTypes } from "./commands/build";
+import { CSharpClassQueue, registerCSharpClasses } from "./commands/csharpClasses";
+import { registerSolutionComponents } from "./commands/solutionComponents";
+import { registerScriptModels } from "./commands/scriptModels";
+import { registerCommandBar } from "./commands/commandBar";
 import { compareDeployed, getPluginSource, pushPlugin } from "./commands/plugins";
+import { editRegistration } from "./commands/pluginProperties";
+import { editStep, unregisterStepCommand } from "./commands/editStep";
 import { compareWebResource, DataverseContentProvider, newFormScript, onSavePush, pushWebResources } from "./commands/webResources";
-import { clearTokenCache, dataverseFor } from "./ui/auth";
+import { clearTokenCache, dataverseFor, onSignInChanged } from "./ui/auth";
 import { WorkspaceTree } from "./ui/workspaceTree";
 import { openPowerAutomateFlow } from "./commands/openPowerAutomateFlow";
 import { openEnvironmentUrl } from "./ui/environmentBrowser";
@@ -29,8 +35,11 @@ import { registerScaffolding } from "./commands/scaffold";
 import { registerPcfAndPages } from "./commands/pcfPages";
 import { registerCustomApisAndForms } from "./commands/customApi";
 import { registerCopilotTools } from "./ui/copilot";
+import { AiTools } from "./ui/aiTools";
+import { TenantView } from "./ui/tenantView";
+import { lanternTools } from "./ui/lanternTools";
 import { clientForPath, reportError, resolveClient, SECTION, settings, withProgress, workspaceRoots, write } from "./ui/context";
-import { ClientStatusBar, DataverseCodeLens } from "./ui/editor";
+import { ClientStatusBar, DataverseCodeLens, forgetRegisteredSteps } from "./ui/editor";
 import { Client } from "./core/clients";
 import { MetadataService } from "./core/metadata";
 import { registerMetadataCommands, TableDocProvider } from "./commands/metadata";
@@ -41,7 +50,9 @@ import { CellContext, ResultsView } from "./ui/results";
 import { editUserSettings } from "./commands/userSettings";
 import { openSearch } from "./commands/search";
 import { addTenantCommand, selectTenantCommand } from "./commands/tenants";
-import { activeTenant, configureTenantContext, importSavedTenants, removeTenant } from "./ui/tenantContext";
+import { registerDebugStep } from "./commands/debugStep";
+import { unregisterPackageCommand } from "./commands/unregisterPackage";
+import { activeTenant, configureTenantContext, importSavedTenants, removeTenant, unreadableTenantFile } from "./ui/tenantContext";
 import { registerTraceCommands, TraceDocProvider, TraceTree } from "./ui/traceTree";
 import { startFileLogging } from "./core/logger";
 
@@ -57,12 +68,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // One metadata cache per org, kept in the extension's storage (never in client repos).
   const services = new Map<string, MetadataService>();
+  // Who each org's service signs in as: the latest client to use it, copied, because a client
+  // switches environments in place (and Select Tenant makes a new one), so the client that made
+  // the service may point at another org by now.
+  const signsInAs = new Map<string, Client>();
   const serviceFor = (client: Client): MetadataService => {
     const key = client.orgHost || client.name;
+    signsInAs.set(key, client.withEnvironment(client.envName));
     let svc = services.get(key);
     if (!svc) {
       svc = new MetadataService(path.join(context.globalStorageUri.fsPath, "metadata", key.replace(/[^a-zA-Z0-9.-]/g, "_")), (silent) =>
-        dataverseFor(client, { silent })
+        dataverseFor(signsInAs.get(key)!, { silent })
       );
       services.set(key, svc);
     }
@@ -82,6 +98,10 @@ export function activate(context: vscode.ExtensionContext): void {
   useQueryHistory(history, () => clients.refresh());
   const diagnostics = new ScriptDiagnostics(serviceFor);
   const checker = vscode.languages.createDiagnosticCollection("lantern-checker");
+  const tenantView = new TenantView();
+  // Tables waiting to become C# classes; its status bar item follows the selected tenant.
+  const csharpQueue = new CSharpClassQueue(context, (c) => serviceFor(c));
+  const tenantTree = vscode.window.createTreeView("lantern.tenant", { treeDataProvider: tenantView });
   const clientsView = vscode.window.createTreeView("lantern.clients", { treeDataProvider: clients.forPane("solutions"), showCollapseAll: true });
   const environmentView = vscode.window.createTreeView("lantern.environment", { treeDataProvider: clients.forPane("environment"), showCollapseAll: true });
 
@@ -95,20 +115,25 @@ export function activate(context: vscode.ExtensionContext): void {
     if (key === checkedConnection) return;
     checkedConnection = key;
     const version = ++connectionCheckVersion;
-    void dataverseFor(client).whoAmI().then(() => {
+    // Silent: opening a window or selecting a tenant never pops a sign-in; a failure offers Sign In As below.
+    void dataverseFor(client, { silent: true }).whoAmI().then(() => {
       if (checkedConnection === key && version === connectionCheckVersion) clients.refresh();
     }).catch((error: unknown) => {
       if (checkedConnection !== key || version !== connectionCheckVersion) return;
       const message = error instanceof Error ? error.message : String(error);
       write(`Connection check for ${client.name} (${client.orgHost}): ${message}\n`);
       if (/cancelled/i.test(message)) return;
-      if (/sign.in|account|token|secret|401|403|Azure CLI/i.test(message)) {
+      if (/sign(ed)?.in|account|token|secret|401|403|Azure CLI/i.test(message)) {
         void vscode.window.showWarningMessage(`Lantern couldn't authenticate to ${client.orgHost}: ${message}`, "Sign In As…")
           .then((choice) => { if (choice) void vscode.commands.executeCommand("lantern.signInAs", client); });
       }
     });
   };
   const refreshAll = (): void => {
+    // Solutions and Environment show only once a tenant is selected; until then the Tenant view's welcome does.
+    void vscode.commands.executeCommand("setContext", "lantern.tenantSelected", !!activeTenant());
+    tenantView.refresh();
+    csharpQueue.update();
     clients.refresh();
     statusBar.update();
     codeLens.refresh();
@@ -130,7 +155,14 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     });
 
+  // Lantern's tools for Claude Code, Codex and other MCP clients (Copilot gets them below, natively).
+  const aiTools = new AiTools(context, () => lanternTools(serviceFor, csharpQueue));
+  void aiTools.applySettings();
+
   context.subscriptions.push(
+    tenantTree,
+    // Sign In As, switching environments and the first token all change what the Tenant view shows.
+    onSignInChanged(() => tenantView.refresh()),
     clientsView,
     environmentView,
     vscode.workspace.registerTextDocumentContentProvider(TableDocProvider.scheme, tableDocs),
@@ -184,7 +216,13 @@ export function activate(context: vscode.ExtensionContext): void {
       clients.refresh();
       codeLens.refresh();
     }),
-    ...registerCopilotTools(serviceFor),
+    ...registerCopilotTools(serviceFor, csharpQueue),
+    ...registerCSharpClasses(csharpQueue),
+    ...registerSolutionComponents(serviceFor, (c) => clients.reloadSolutions(c)),
+    ...registerScriptModels(serviceFor),
+    ...registerCommandBar(serviceFor, contentProvider),
+    aiTools,
+    cmd("aiTools.open", () => aiTools.open()),
     cmd("queries.openRecent", (node: { client: Client; entry: { sql: string } }) => openQuery(node.client, node.entry.sql, false, serviceFor, results)),
     vscode.languages.registerCompletionItemProvider({ language: "xml" }, new FetchXmlCompletions(serviceFor), '"', "'"),
     diagnostics.collection,
@@ -230,7 +268,15 @@ export function activate(context: vscode.ExtensionContext): void {
     cmd("configureClient", (arg) => configureFolder(arg, refreshAll)),
     cmd("openClientConfig", (arg) => openClientConfig(arg)),
     cmd("openInBrowser", (arg) => openInBrowser(arg)),
-    cmd("refresh", () => refreshAll()),
+    cmd("refresh", () => {
+      // The refresh button reloads what the tree loaded (steps, jobs, Environment, web resources...), the
+      // org's table list and the solutions' components, so a table created in the maker portal shows up
+      // and Environment follows Sign In As; columns and forms keep their caches.
+      const client = activeTenant();
+      if (client) for (const key of ["tables", "solution-tables/", "solution-components/"]) serviceFor(client).forget(key);
+      clients.reloadAll();
+      refreshAll();
+    }),
     cmd("clientActions", (arg) => clientActions(arg)),
     cmd("testConnection", (arg) => testConnection(arg)),
     cmd("signOut", () => {
@@ -254,18 +300,27 @@ export function activate(context: vscode.ExtensionContext): void {
     cmd("pushPlugin", (arg) => pushPlugin(arg, pluginsChanged)),
     cmd("plugins.getSource", (arg) => getPluginSource(arg, pluginsChanged)),
     cmd("plugins.compareDeployed", (arg) => compareDeployed(arg)),
+    cmd("plugins.editRegistration", (arg) => editRegistration(arg, pluginsChanged)),
+    cmd("plugins.unregisterPackage", (arg) => unregisterPackageCommand(arg, pluginsChanged)),
+    cmd("steps.edit", (arg) => editStep(arg, serviceFor, () => { forgetRegisteredSteps(); pluginsChanged(); })),
+    cmd("steps.unregister", (arg) => unregisterStepCommand(arg, () => { forgetRegisteredSteps(); pluginsChanged(); })),
+    ...registerDebugStep(() => { forgetRegisteredSteps(); pluginsChanged(); }),
     cmd("plugins.openProject", (node: { plugin: { project: string } }) => vscode.window.showTextDocument(vscode.Uri.file(node.plugin.project))),
     cmd("generateJsTypes", (arg) => generateJsTypes(arg, refreshAll)),
-    cmd("generateEarlyBound", (arg) => generateEarlyBound(arg)),
 
     // Keep everything in sync with what's on disk and on screen
     vscode.window.onDidChangeActiveTextEditor(() => statusBar.update()),
+    // The F5 and Run button context (lantern.activeIsQuery) follows what's typed, not just which editor is active.
+    vscode.workspace.onDidChangeTextDocument((e: { document: vscode.TextDocument }) => {
+      if (e.document === vscode.window.activeTextEditor?.document) statusBar.schedule();
+    }),
     vscode.workspace.onDidOpenTextDocument((doc: vscode.TextDocument) => setExtensionlessLanguage(doc)),
     vscode.workspace.onDidSaveTextDocument((doc: vscode.TextDocument) => {
       if (doc.uri.fsPath.endsWith(".lantern-client.json") || doc.uri.fsPath === path.join(context.globalStorageUri.fsPath, "tenants.json") ||
         (path.basename(doc.uri.fsPath) === "config.json" && path.basename(path.dirname(doc.uri.fsPath)) === ".lantern")) {
         configureTenantContext(path.join(context.globalStorageUri.fsPath, "tenants.json"), settings().clientSettingsLocation, workspaceRoots);
         refreshAll();
+        warnIfUnreadable();
       }
       onSavePush(doc);
     }),
@@ -285,9 +340,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   void migrateLegacySettings(context.globalState).then((moved) => {
     if (moved) void vscode.window.showInformationMessage(`Lantern carried over ${moved} setting${moved === 1 ? "" : "s"} from Dataverse Workspace.`);
-  });
+  }).catch((error: unknown) => write(`Couldn't carry over Dataverse Workspace settings: ${error instanceof Error ? error.message : String(error)}\n`));
   void noticeLegacyExtension();
   setUpClientSettingsStore(context);
+  void vscode.commands.executeCommand("setContext", "lantern.tenantSelected", !!activeTenant());
   checkActiveConnection();
   vscode.workspace.textDocuments.forEach((doc: vscode.TextDocument) => setExtensionlessLanguage(doc));
   statusBar.update();
@@ -310,6 +366,20 @@ export function deactivate(): void {
   // Nothing to clean up beyond context.subscriptions.
 }
 
+let lastUnreadable: string | undefined;
+/** A tenant file that doesn't parse lists no tenants; say which file and why, once for each problem. */
+function warnIfUnreadable(): void {
+  const problem = unreadableTenantFile();
+  const key = problem ? `${problem.file}\0${problem.message}` : undefined;
+  if (key === lastUnreadable) return;
+  lastUnreadable = key;
+  if (!problem) return;
+  write(`Couldn't read ${problem.file}: ${problem.message}\n`);
+  void vscode.window.showWarningMessage(`Lantern couldn't read its tenant list in ${problem.file}: ${problem.message}`, "Open File").then((choice) => {
+    if (choice) void vscode.window.showTextDocument(vscode.Uri.file(problem.file));
+  });
+}
+
 /** Selects the configured storage mode without importing or moving local files. */
 function setUpClientSettingsStore(context: vscode.ExtensionContext): void {
   const base = context.globalStorageUri.fsPath;
@@ -317,6 +387,7 @@ function setUpClientSettingsStore(context: vscode.ExtensionContext): void {
   useClientStore(global ? path.join(base, "clients") : undefined, path.join(base, "ignored-folders.json"));
   configureTenantContext(path.join(base, "tenants.json"), global ? "global" : "folder", workspaceRoots);
   if (global) importSavedTenants(path.join(base, "clients"));
+  warnIfUnreadable();
 }
 
 async function testConnection(arg: unknown): Promise<void> {
@@ -340,7 +411,7 @@ async function clientActions(arg: unknown): Promise<void> {
   items.push(
     { label: "$(rocket) Build and push plug-ins", command: "pushPlugin", args: [client] },
     { label: "$(symbol-interface) Generate JS form types", command: "generateJsTypes", args: [client] },
-    { label: "$(symbol-class) Generate C# early-bound classes", command: "generateEarlyBound", args: [client] },
+    { label: "$(symbol-class) Generate C# classes", command: "generateCSharpClasses", args: [client] },
     { label: "$(database) New query", command: "query.new", args: [client] },
     { label: "$(references) Find where a column is used", command: "metadata.findUsages", args: [client] },
     ...(client.environments.length ? [{ label: `$(server-environment) Switch environment (now ${client.envName})…`, command: "environments.switch", args: [client] }] : []),
@@ -350,7 +421,7 @@ async function clientActions(arg: unknown): Promise<void> {
     { label: "$(person) Edit user settings", command: "editUserSettings", args: [client] },
     { label: "$(plug) Test connection", command: "testConnection", args: [client] },
     { label: "$(globe) Open in browser", command: "openInBrowser", args: [client] },
-    { label: "$(settings-gear) Edit .lantern/config.json", command: "openClientConfig", args: [client] }
+    { label: "$(settings-gear) Edit Tenant Configuration", command: "openClientConfig", args: [client] }
   );
   const pick = await vscode.window.showQuickPick(items, { placeHolder: `${client.name} · ${client.config.org || "no org set"}` });
   if (pick) await vscode.commands.executeCommand(`${SECTION}.${pick.command}`, ...pick.args);

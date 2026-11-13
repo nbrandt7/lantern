@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Client } from "./clients";
 import { findFiles } from "./files";
-import { isWebResourceCandidate, resolveWebResourceName } from "./solutions";
+import { resolveWebResourceName, webResourceFiles } from "./solutions";
 import { maskJs } from "./codeanalysis";
 
 /**
@@ -19,7 +19,7 @@ export function findWebResourceFile(client: Client, name: string): string | unde
     if (match && match[1].trim().toLowerCase() === wanted && fs.existsSync(file)) return file;
   }
 
-  const candidates = findFiles(client.dir, (_n, full) => isWebResourceCandidate(full, client));
+  const candidates = webResourceFiles(client);
   const exact = candidates.find((f) => resolveWebResourceName(f, client)?.name.toLowerCase() === wanted);
   if (exact) return exact;
 

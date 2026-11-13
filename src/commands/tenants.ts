@@ -1,10 +1,17 @@
 import * as vscode from "vscode";
 import { normalizeOrg } from "../core/clients";
-import { activeTenant, addTenant, availableTenants, selectTenant, tenantMode } from "../ui/tenantContext";
+import { activeTenant, addTenant, availableTenants, selectTenant, tenantMode, unreadableTenantFile } from "../ui/tenantContext";
 
 export async function selectTenantCommand(onChange: () => void): Promise<void> {
   const tenants = availableTenants();
   if (!tenants.length) {
+    // An empty list from a file that doesn't parse isn't "no tenants": point at the file instead.
+    const problem = unreadableTenantFile();
+    if (problem) {
+      const open = await vscode.window.showWarningMessage(`Lantern couldn't read its tenant list in ${problem.file}: ${problem.message}`, "Open File");
+      if (open) await vscode.window.showTextDocument(vscode.Uri.file(problem.file));
+      return;
+    }
     void vscode.window.showInformationMessage("No tenants are configured. Use Lantern: Add Tenant to add one.");
     return;
   }

@@ -148,7 +148,7 @@ async function dependencyTarget(arg: Node | vscode.Uri | undefined): Promise<{ c
     return undefined;
   }
   const name = resolveWebResourceName(file, client)?.name;
-  if (!name) throw new UserError(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in .lantern/config.json.`);
+  if (!name) throw new UserError(`${path.basename(file)} isn't a web resource Lantern can name. Add its folder to "webResourceRoots" in the tenant configuration.`);
   const wr = await withProgress(`Looking up ${name}`, () => dataverseFor(client).findWebResource(name));
   if (wr === undefined) return undefined;
   if (!wr) throw new UserError(`${name} doesn't exist in ${client.orgHost} yet, so nothing depends on it.`);
@@ -212,9 +212,14 @@ async function scriptMetadata(client: Client, file: string, serviceFor: (c: Clie
 
 // ---------- reports ----------
 
-export function dependenciesMarkdown(label: string, type: number, result: { usedBy: Dependency[]; uses: Dependency[] }, client: Client): string {
+export function dependenciesMarkdown(label: string, type: number, result: { usedBy: Dependency[]; uses: Dependency[]; errors?: { usedBy?: string; uses?: string } }, client: Client): string {
   const lines = [`# Dependencies of ${label}`, "", `From Dataverse's dependency tracking in ${client.orgHost}.`, ""];
-  const section = (title: string, explain: string, list: Dependency[]) => {
+  const section = (title: string, explain: string, list: Dependency[], error?: string) => {
+    // A failed lookup isn't "nothing": an empty Used by reads as safe to delete.
+    if (error) {
+      lines.push(`## ${title} (unknown)`, "", explain, "", `**Couldn't check:** ${error}`, "");
+      return;
+    }
     lines.push(`## ${title} (${list.length})`, "", explain, "");
     if (!list.length) {
       lines.push("Nothing.", "");
@@ -232,8 +237,8 @@ export function dependenciesMarkdown(label: string, type: number, result: { used
       lines.push("");
     }
   };
-  section("Used by", "These depend on it, so changing or deleting it affects them.", result.usedBy);
-  section("Uses", "It needs these to exist.", result.uses);
+  section("Used by", "These depend on it, so changing or deleting it affects them.", result.usedBy, result.errors?.usedBy);
+  section("Uses", "It needs these to exist.", result.uses, result.errors?.uses);
   lines.push("---", "", "Dataverse doesn't track code. A script calling `getAttribute(\"…\")` or a plug-in reading a column won't appear here.");
   if (type === TYPE.column) lines.push("Use **Find Where Column Is Used** for those.");
   if (type === TYPE.webResource) lines.push("Use **Library Outline** to see the functions inside it and where each runs.");

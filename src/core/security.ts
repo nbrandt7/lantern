@@ -8,11 +8,30 @@ export type Depth = "Basic" | "Local" | "Deep" | "Global";
 export const DEPTH_LABEL: Record<Depth, string> = { Basic: "User", Local: "Business unit", Deep: "Parent: child business units", Global: "Organization" };
 const DEPTH_RANK: Record<Depth, number> = { Basic: 1, Local: 2, Deep: 3, Global: 4 };
 
-/** prvAppendToAccount -> { action: "AppendTo", schema: "Account" }. AppendTo is checked before Append. */
-export function parsePrivilege(name: string): { action: Action; schema: string } | undefined {
+/**
+ * prvAppendToAccount -> { action: "AppendTo", schema: "Account" }. AppendTo is checked before Append,
+ * unless isTable says the name only makes sense as Append: prvAppendTopic is Append on Topic.
+ */
+export function parsePrivilege(name: string, isTable?: (schema: string) => boolean): { action: Action; schema: string } | undefined {
   const m = /^prv(AppendTo|Append|Create|Read|Write|Delete|Assign|Share)(\w+)$/.exec(name);
-  return m ? { action: m[1] as Action, schema: m[2] } : undefined;
+  if (!m) return undefined;
+  if (m[1] === "AppendTo" && isTable && !isTable(m[2]) && isTable(`To${m[2]}`)) return { action: "Append", schema: `To${m[2]}` };
+  return { action: m[1] as Action, schema: m[2] };
 }
+
+/**
+ * Privileges not named after their table's schema name. Every activity table shares
+ * the Activity ones (activity security comes through activitypointer), notes are Note
+ * and users User.
+ */
+const PRIVILEGE_TABLES: Record<string, string[]> = {
+  activity: [
+    "activitypointer", "appointment", "email", "fax", "letter", "phonecall", "task", "recurringappointmentmaster", "serviceappointment", "socialactivity",
+    "campaignactivity", "campaignresponse", "bulkoperation", "opportunityclose", "orderclose", "quoteclose", "incidentresolution",
+  ],
+  note: ["annotation"],
+  user: ["systemuser"],
+};
 
 export interface RolePrivileges {
   /** Table logical name -> action -> depth. */
@@ -21,16 +40,21 @@ export interface RolePrivileges {
 
 export async function rolePrivileges(dv: DataverseClient, roleId: string, tables: TableMeta[]): Promise<RolePrivileges> {
   const r = await dv.getJson<{ RolePrivileges: Array<{ PrivilegeName: string; Depth: Depth }> }>(`RetrieveRolePrivilegesRole(RoleId=@p)?@p=${roleId}`);
-  const bySchema = new Map(tables.map((t) => [t.schemaName.toLowerCase(), t.logicalName]));
+  const bySchema = new Map(tables.map((t) => [t.schemaName.toLowerCase(), [t.logicalName]]));
+  const present = new Set(tables.map((t) => t.logicalName));
+  for (const [schema, names] of Object.entries(PRIVILEGE_TABLES)) {
+    const found = names.filter((n) => present.has(n));
+    if (!bySchema.has(schema) && found.length) bySchema.set(schema, found);
+  }
   const out: RolePrivileges = { tables: new Map() };
   for (const p of r.RolePrivileges ?? []) {
-    const parsed = parsePrivilege(p.PrivilegeName);
+    const parsed = parsePrivilege(p.PrivilegeName, (s) => bySchema.has(s.toLowerCase()));
     if (!parsed) continue;
-    const table = bySchema.get(parsed.schema.toLowerCase());
-    if (!table) continue;
-    const entry = out.tables.get(table) ?? {};
-    entry[parsed.action] = p.Depth;
-    out.tables.set(table, entry);
+    for (const table of bySchema.get(parsed.schema.toLowerCase()) ?? []) {
+      const entry = out.tables.get(table) ?? {};
+      entry[parsed.action] = p.Depth;
+      out.tables.set(table, entry);
+    }
   }
   return out;
 }

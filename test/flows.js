@@ -48,7 +48,8 @@ const auth = require("../out/ui/auth");
   assert.equal(calls.length, before);
   const item = tree.getTreeItem(nodes[0]);
   assert.equal(item.description, "On");
-  assert.equal(item.command, undefined, "flow entries are informational and do not open a designer");
+  assert.equal(item.command.command, "lantern.openPowerAutomateFlow", "clicking a flow opens its designer");
+  assert.strictEqual(item.command.arguments[0], nodes[0]);
   for (const target of [part, solution, undefined]) {
     tree.refresh(target);
     const count = calls.length;

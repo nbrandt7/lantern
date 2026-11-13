@@ -129,6 +129,19 @@ export function duplicatesSql(table: TableMeta, columns: string[]): string {
   );
 }
 
+/** Rows that aren't active, or the reason the table has none. */
+export function inactiveSql(t: TableMeta, cols: ColumnMeta[]): string {
+  if (!has(cols, "statecode")) return `${t.displayName} has no active/inactive status.`;
+  const pick = [primaryNameColumn(t, cols), has(cols, "statuscode"), has(cols, "modifiedon")].filter(Boolean).join(", ");
+  const order = has(cols, "modifiedon") ? "\nORDER BY modifiedon DESC" : "";
+  // State 1 is Inactive only on tables with two states: an opportunity's is Won, a case's Resolved, a quote's Active.
+  const states = cols.find((c) => c.logicalName === "statecode")?.options ?? [];
+  const others = states.filter((o) => o.value !== 0);
+  if (others.length <= 1) return `-- Deactivated ${t.displayName} rows\nSELECT TOP 1000 ${pick}\nFROM ${t.logicalName}\nWHERE statecode = ${others[0]?.value ?? 1}${order}`;
+  const first = states.find((o) => o.value === 0)?.label || "in their first state";
+  return `-- ${t.displayName} rows that aren't ${first}: ${others.map((o) => o.label || o.value).join(", ")}\nSELECT TOP 1000 ${pick}, statecode\nFROM ${t.logicalName}\nWHERE statecode <> 0${order}`;
+}
+
 export function registerMetadataCommands(
   tree: MetadataTree,
   serviceFor: (c: Client) => MetadataService,
@@ -202,20 +215,6 @@ export function registerMetadataCommands(
       if (node.kind === "table") await openEnvironmentUrl(node.client, `${node.client.config.org}/main.aspx?pagetype=entityrecord&etn=${node.table.logicalName}`);
     }),
 
-    r("lantern.metadata.addEarlyBound", async (node: MetaNode) => {
-      if (node.kind !== "table") return;
-      const client = node.client;
-      client.reload();
-      const list = client.config.earlyBound.entities;
-      if (!list.includes(node.table.logicalName)) list.push(node.table.logicalName);
-      client.save();
-      const choice = await vscode.window.showInformationMessage(
-        `${node.table.logicalName} is in the C# early-bound tables (${list.length} total).`,
-        "Generate Now"
-      );
-      if (choice) await vscode.commands.executeCommand("lantern.generateEarlyBound", client);
-    }),
-
     // ---------- debugging queries (Query submenu) ----------
 
     r("lantern.metadata.query.recentlyCreated", (node: MetaNode) =>
@@ -234,13 +233,7 @@ export function registerMetadataCommands(
       })
     ),
 
-    r("lantern.metadata.query.inactive", (node: MetaNode) =>
-      tableQuery(node, (t, cols) => {
-        if (!has(cols, "statecode")) return `${t.displayName} has no active/inactive status.`;
-        const pick = [primaryNameColumn(t, cols), has(cols, "statuscode"), has(cols, "modifiedon")].filter(Boolean).join(", ");
-        return `-- Deactivated ${t.displayName} rows\nSELECT TOP 1000 ${pick}\nFROM ${t.logicalName}\nWHERE statecode = 1${has(cols, "modifiedon") ? "\nORDER BY modifiedon DESC" : ""}`;
-      })
-    ),
+    r("lantern.metadata.query.inactive", (node: MetaNode) => tableQuery(node, inactiveSql)),
 
     r("lantern.metadata.query.byStatus", (node: MetaNode) =>
       tableQuery(node, (t, cols) => {
@@ -366,9 +359,10 @@ export function registerMetadataCommands(
       if (name) return insert(`formContext.getAttribute("${name}")`);
     }),
 
-    r("lantern.metadata.insertGetControl", (node: MetaNode) => {
-      const name = node.kind === "control" ? node.control.id : node.kind === "column" ? node.column.logicalName : undefined;
-      if (name) return insert(`formContext.getControl("${name}")`);
+    r("lantern.metadata.insertGetControl", async (node: MetaNode) => {
+      if (node.kind === "control") return insert(`formContext.getControl("${node.control.id}")`);
+      if (node.kind !== "column") return;
+      return insert(`formContext.getControl("${await controlNameFor(serviceFor(node.client), node.table.logicalName, node.column.logicalName)}")`);
     }),
 
     r("lantern.metadata.openTable", async (node?: MetaNode) => {
@@ -441,6 +435,24 @@ function nameOf(node: MetaNode): string | undefined {
     case "control": return node.control.id;
     default: return undefined;
   }
+}
+
+/**
+ * The control name getControl needs for a column. Usually the column's own name, but a
+ * column that's only inside a composite control (an address line, a first name) is
+ * named like address1_composite_compositionLinkControl_address1_line1 on the form.
+ */
+export async function controlNameFor(service: MetadataService, table: string, column: string): Promise<string> {
+  let forms: FormMeta[];
+  try {
+    forms = await service.forms(table);
+  } catch {
+    return column;
+  }
+  const bound = forms.flatMap((f) => [...f.header, ...f.tabs.flatMap((t) => t.sections.flatMap((s) => s.controls))]).filter((c) => c.field === column);
+  if (!bound.length || bound.some((c) => c.id === column)) return column;
+  // Header copies (header_…) are a last resort: they only exist where the header shows the column.
+  return (bound.find((c) => !c.id.startsWith("header_")) ?? bound[0]).id;
 }
 
 async function insert(text: string): Promise<void> {

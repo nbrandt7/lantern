@@ -7,8 +7,8 @@ import { MetadataService, TableMeta } from "../core/metadata";
 import { fetchXmlStart, QueryContext, runQuery, ResultSet } from "../core/query";
 import { QueryHistory } from "../core/history";
 import { fillIn, originOf } from "./fetchInCode";
-import { parseStatement, splitStatements, Statement, translate } from "../core/sql";
-import { applyWrite, planWrite } from "../core/write";
+import { parseStatement, splitStatements, SqlError, Statement, translate } from "../core/sql";
+import { applyWrite, hintText, limits, planWrite } from "../core/write";
 import { dataverseFor } from "../ui/auth";
 import { confirmProtected, clientForPath, resolveClient, scanAll, settings, withProgress } from "../ui/context";
 import { columnMarkdown } from "../ui/metadataTree";
@@ -27,7 +27,7 @@ export function isFetchXml(text: string): boolean {
 export async function newQuery(arg?: unknown): Promise<void> {
   const client = await resolveClient(arg);
   if (!client?.config.org) {
-    if (client) void vscode.window.showWarningMessage(`Set "org" in ${client.name}/.lantern/config.json first.`);
+    if (client) void vscode.window.showWarningMessage(`Set "org" in the ${client.name} tenant configuration first.`);
     return;
   }
   const content = [
@@ -80,7 +80,7 @@ export async function runQueryCommand(
     if (!client) return;
   }
   if (!client.config.org) {
-    void vscode.window.showWarningMessage(`Set "org" in ${client.name}/.lantern/config.json first.`);
+    void vscode.window.showWarningMessage(`Set "org" in the ${client.name} tenant configuration first.`);
     return;
   }
   const selection = editor && editor.document === doc && !editor.selection.isEmpty ? doc.getText(editor.selection) : undefined;
@@ -101,6 +101,8 @@ export async function runQueryCommand(
       // Impersonation: Dataverse runs the request with that user's security roles.
       dv: runAs ? base.withHeaders({ MSCRMCallerID: runAs.userId }) : base,
       maxRows: settings().queryMaxRows,
+      cancel: ctx.token,
+      onPage: (rows: number) => progress.report({ message: `${rows.toLocaleString()} rows so far…` }),
       primaryIdOf: (t: string) => byName.get(t)?.primaryId,
       entitySetOf: async (t: string) => {
         const meta = byName.get(t.toLowerCase());
@@ -125,7 +127,7 @@ export async function runQueryCommand(
         const parsed = isFetchXml(statement) ? undefined : tryParse(statement);
         const set =
           parsed && parsed.kind !== "select"
-            ? await runWrite(parsed, statement, target, service, queryCtx, ctx)
+            ? await runWrite(parsed, statement, target, service, queryCtx, ctx, progress)
             : await runQuery(statement, queryCtx);
         order.push(["set", sets.length]);
         sets.push(set);
@@ -148,10 +150,18 @@ export async function runQueryCommand(
   await results.show(`${name} (${target.name}${target.envName ? ` ${target.envName}` : ""}${runAs ? `, as ${runAs.name}` : ""})`, target, outcome);
 }
 
+/** Comments before a statement: new query documents start with "-- Tenant:" lines. */
+const LEADING_COMMENTS = /^(?:\s*(?:--[^\n]*(?:\n|$)|\/\*(?:(?!\*\/)[\s\S])*\*\/))*/;
+/** An UPDATE, DELETE or INSERT, whatever comments come before it. */
+export const isWriteStatement = (s: string) => /^\s*(update|delete|insert)\b/i.test(s.replace(LEADING_COMMENTS, ""));
+const WRITE_STATEMENT = { test: isWriteStatement };
+
 function tryParse(statement: string): Statement | undefined {
   try {
     return parseStatement(statement);
-  } catch {
+  } catch (err) {
+    // A write statement's own syntax error is the useful message; left to runQuery, it would say UPDATE has no FetchXML.
+    if (WRITE_STATEMENT.test(statement)) throw err instanceof SqlError ? new UserError(err.message) : err;
     return undefined; // runQuery reports the parse error with its own message
   }
 }
@@ -166,13 +176,16 @@ async function runWrite(
   client: Client,
   service: MetadataService,
   queryCtx: QueryContext,
-  ctx: { token?: { isCancellationRequested: boolean; onCancellationRequested(l: () => void): unknown }; log: (t: string) => void }
+  ctx: { token?: { isCancellationRequested: boolean; onCancellationRequested(l: () => void): unknown }; log: (t: string) => void },
+  progress: vscode.Progress<{ message?: string; increment?: number }>
 ): Promise<ResultSet> {
   const table = (await service.tables()).find((t) => t.logicalName === stmt.table);
   if (!table?.entitySetName) throw new UserError(`There's no table named "${stmt.table}" in ${client.orgHost}.`);
   const columns = await service.columns(table.logicalName);
+  const planning = Date.now();
   const plan = await planWrite(stmt, source, table, columns, queryCtx);
   const verb = plan.kind === "update" ? "Update" : plan.kind === "insert" ? "Create" : "Delete";
+  if (plan.kind !== "insert") ctx.log(`Found ${plan.rows.length.toLocaleString()} ${table.logicalName} row${plan.rows.length === 1 ? "" : "s"} to ${verb.toLowerCase()} in ${Date.now() - planning} ms\n`);
   if (!plan.rows.length) throw new UserError(`No ${table.logicalName} rows match, so nothing was ${plan.kind === "update" ? "updated" : "deleted"}.`);
   if (!(await confirmProtected(client, `${verb} ${table.displayName} rows`))) throw new UserError("Cancelled. Nothing was changed.");
 
@@ -180,6 +193,7 @@ async function runWrite(
   const rowsText = `${n.toLocaleString()} ${table.displayName} row${n === 1 ? "" : "s"}`;
   const sample = plan.rows.slice(0, 10).map((r) => `• ${r.name}`).join("\n") + (n > 10 ? `\n…and ${(n - 10).toLocaleString()} more` : "");
   const warning = plan.hasWhere ? "" : "\n\nThere's no WHERE clause, so this affects every row in the table.";
+  const bypass = plan.hints?.length ? `\n\n${hintText(plan.hints)}` : "";
   const change =
     plan.kind === "update"
       ? `Set ${plan.summary} on ${rowsText}?`
@@ -187,11 +201,26 @@ async function runWrite(
         ? `Create ${rowsText} (${plan.summary})?`
         : `Delete ${rowsText}? This can't be undone.`;
   const button = `${verb} ${n.toLocaleString()} Row${n === 1 ? "" : "s"}`;
-  const choice = await vscode.window.showWarningMessage(change, { modal: true, detail: `${sample}${warning}` }, button);
+  const choice = await vscode.window.showWarningMessage(change, { modal: true, detail: `${sample}${warning}${bypass}` }, button);
   if (choice !== button) throw new UserError("Cancelled. Nothing was changed.");
 
-  ctx.log(`${verb} ${n} ${table.logicalName} rows\n`);
-  return applyWrite(plan, queryCtx, () => undefined, ctx.token);
+  ctx.log(`${verb} ${n.toLocaleString()} ${table.logicalName} rows in batches of ${limits.startBatchSize} to start (then sized to take about ${Math.round(limits.batchMs / 1000)} s each), ${limits.concurrency} at a time to start\n`);
+  const doing = plan.kind === "update" ? "Updating" : plan.kind === "insert" ? "Creating" : "Deleting";
+  let reported = 0;
+  const result = await applyWrite(
+    plan,
+    queryCtx,
+    (done) => {
+      progress.report({ message: `${doing} ${done.toLocaleString()} of ${n.toLocaleString()} rows`, increment: ((done - reported) / n) * 100 });
+      reported = done;
+    },
+    ctx.token,
+    ctx.log
+  );
+  const failed = result.rows.filter((r) => String(r[1].raw).startsWith("Failed")).length;
+  const skipped = result.rows.filter((r) => String(r[1].raw).startsWith("Skipped")).length;
+  ctx.log(`${verb}d ${(n - failed - skipped).toLocaleString()} of ${n.toLocaleString()} rows in ${result.elapsedMs} ms${failed ? `, ${failed} failed` : ""}${skipped ? `, ${skipped} skipped (cancelled)` : ""}\n`);
+  return result;
 }
 
 /** Opens the FetchXML a SQL query (or the selected part) translates to. */
@@ -205,6 +234,7 @@ export async function showFetchXml(serviceFor: (c: Client) => MetadataService): 
   try {
     const xml = splitStatements(text)
       .map((s) => {
+        if (WRITE_STATEMENT.test(s)) return `<!-- ${s.replace(LEADING_COMMENTS, "").trim().split(/\r?\n/)[0].trim().replace(/-{2,}/g, "-")} … changes data, so it has no FetchXML. -->`;
         const t = translate(s, { primaryIdOf: (name) => primary.get(name) });
         const note = t.having ? `<!-- FetchXML has no HAVING. The extension keeps only the rows where ${t.having.map((h) => h.text).join(" and ")}. -->\n` : "";
         return note + t.fetchXml;
@@ -217,7 +247,7 @@ export async function showFetchXml(serviceFor: (c: Client) => MetadataService): 
   }
 }
 
-const KEYWORDS = ["SELECT", "DISTINCT", "TOP", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS NULL", "IS NOT NULL", "LIKE", "BETWEEN",
+const KEYWORDS = ["SELECT", "DISTINCT", "TOP", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS NULL", "IS NOT NULL", "LIKE", "BETWEEN", "EXISTS", "NOT EXISTS", "OPTION", "BYPASS PLUGINS", "BYPASS SYNC PLUGINS", "BYPASS ASYNC PLUGINS", "BYPASS FLOWS",
   "INNER JOIN", "LEFT JOIN", "ON", "AS", "GROUP BY", "ORDER BY", "ASC", "DESC", "COUNT(*)", "SUM", "AVG", "MIN", "MAX"];
 
 /** Tables after FROM/JOIN, columns after "alias." or anywhere else in a query, from the cached metadata. */

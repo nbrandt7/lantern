@@ -18,6 +18,7 @@ export interface RegisteredTypeInfo {
   typename: string;
   isworkflowactivity: boolean;
   assemblyname: string;
+  friendlyname?: string | null;
   _pluginassemblyid_value: string;
 }
 
@@ -59,27 +60,32 @@ export async function orgPlugins(client: Client, dv: DataverseClient, fresh = fa
   if (hit && !fresh && Date.now() - hit.at < TTL_MS) return hit;
   const running = inflight.get(key);
   if (running && !fresh) return running;
-  const load = (async () => {
-    const [assemblies, types, steps] = await Promise.all([
-      dv.getAll<RegisteredAssembly>("pluginassemblies?$select=pluginassemblyid,name,version,culture,publickeytoken,isolationmode,ismanaged,_packageid_value&$filter=customizationlevel eq 1&$orderby=name"),
-      dv.getAll<RegisteredTypeInfo>("plugintypes?$select=plugintypeid,typename,isworkflowactivity,assemblyname,_pluginassemblyid_value&$filter=customizationlevel eq 1"),
-      fetchSteps(dv),
-    ]);
+  const load: Promise<OrgPlugins> = Promise.all([
+    dv.getAll<RegisteredAssembly>("pluginassemblies?$select=pluginassemblyid,name,version,culture,publickeytoken,isolationmode,ismanaged,_packageid_value&$filter=customizationlevel eq 1&$orderby=name"),
+    dv.getAll<RegisteredTypeInfo>("plugintypes?$select=plugintypeid,typename,isworkflowactivity,assemblyname,friendlyname,_pluginassemblyid_value&$filter=customizationlevel eq 1"),
+    fetchSteps(dv),
+  ]).then(([assemblies, types, steps]) => {
     const value = { at: Date.now(), assemblies, types, steps };
-    cache.set(key, value);
+    // Only the newest load is cached: one overtaken by a fresh load, or started before a push, read older rows.
+    if (inflight.get(key) === load) cache.set(key, value);
     return value;
-  })();
+  });
   inflight.set(key, load);
   try {
     return await load;
   } finally {
-    inflight.delete(key);
+    if (inflight.get(key) === load) inflight.delete(key);
   }
 }
 
 export function forgetOrgPlugins(client?: Client): void {
-  if (!client) cache.clear();
-  else cache.delete(keyOf(client));
+  if (!client) {
+    cache.clear();
+    inflight.clear();
+  } else {
+    cache.delete(keyOf(client));
+    inflight.delete(keyOf(client));
+  }
 }
 
 /** The version a project builds: AssemblyVersion or Version in the .csproj, else [assembly: AssemblyVersion] in its code. */
@@ -114,14 +120,17 @@ export function projectStatus(client: Client, project: PluginProject, org: OrgPl
   const types = registered ? org.types.filter((t) => t._pluginassemblyid_value === registered.pluginassemblyid) : [];
   const classes = projectPluginClasses(project.project, client.dir);
   const out: ClassStatus[] = [];
-  const stepsOf = (typeName: string) => org.steps.filter((s) => s.assembly.toLowerCase() === project.assembly.toLowerCase() && s.typeName === typeName);
+  // By the type's ID: another registered version of the assembly has a type with the same name and its own steps.
+  // A step row read without the ID falls back to the assembly and type name.
+  const stepsOf = (type: RegisteredTypeInfo) =>
+    org.steps.filter((s) => (s.typeId ? s.typeId === type.plugintypeid : s.assembly.toLowerCase() === project.assembly.toLowerCase() && s.typeName === type.typename));
   for (const cls of classes) {
     const type = types.find((t) => t.typename === cls.fullName);
-    out.push({ typeName: cls.fullName, cls, type, kind: type ? (type.isworkflowactivity ? "workflow" : "plugin") : cls.pluginKind, steps: type ? stepsOf(type.typename) : [] });
+    out.push({ typeName: cls.fullName, cls, type, kind: type ? (type.isworkflowactivity ? "workflow" : "plugin") : cls.pluginKind, steps: type ? stepsOf(type) : [] });
   }
   for (const type of types) {
     if (out.some((c) => c.type === type)) continue;
-    out.push({ typeName: type.typename, type, kind: type.isworkflowactivity ? "workflow" : "plugin", steps: stepsOf(type.typename) });
+    out.push({ typeName: type.typename, type, kind: type.isworkflowactivity ? "workflow" : "plugin", steps: stepsOf(type) });
   }
   out.sort((a, b) => a.typeName.localeCompare(b.typeName));
   return { registered, others: same.filter((a) => a !== registered), localVersion: version, classes: out };

@@ -38,6 +38,18 @@ export interface AssemblyMetadata {
 
 export class NotAnAssemblyError extends Error {}
 
+const TRUNCATED = "Not a .NET assembly: the file is truncated or corrupt.";
+
+/** A cut-short file makes Buffer reads deep in the parser throw RangeError; report that as what it is. */
+function parsing<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (err) {
+    if (err instanceof RangeError) throw new NotAnAssemblyError(TRUNCATED);
+    throw err;
+  }
+}
+
 /** Lowercase hex public key token: the last 8 bytes of SHA-1(public key), reversed. */
 export function publicKeyTokenOf(publicKey: Buffer): string {
   const hash = crypto.createHash("sha1").update(publicKey).digest();
@@ -45,6 +57,10 @@ export function publicKeyTokenOf(publicKey: Buffer): string {
 }
 
 export function readAssembly(buf: Buffer): AssemblyMetadata {
+  return parsing(() => readMetadata(buf));
+}
+
+function readMetadata(buf: Buffer): AssemblyMetadata {
   const md = new Metadata(buf);
   const asm = md.assemblyRow();
   const publicKey = md.blob(asm.publicKey);
@@ -72,12 +88,14 @@ export function readAssembly(buf: Buffer): AssemblyMetadata {
 
 /** Same reader, for tests and other callers that want any interface or base class. */
 export function typesAssignableTo(buf: Buffer, namespace: string, name: string): string[] {
-  const md = new Metadata(buf);
-  const out: string[] = [];
-  for (let i = 1; i <= md.count(T.TypeDef); i++) {
-    if (md.isAssignableTo(i, (ns, n) => ns === namespace && n === name)) out.push(md.typeDefName(i));
-  }
-  return out;
+  return parsing(() => {
+    const md = new Metadata(buf);
+    const out: string[] = [];
+    for (let i = 1; i <= md.count(T.TypeDef); i++) {
+      if (md.isAssignableTo(i, (ns, n) => ns === namespace && n === name)) out.push(md.typeDefName(i));
+    }
+    return out;
+  });
 }
 
 // ---------- ECMA-335 ----------
@@ -203,8 +221,9 @@ class Metadata {
     for (let i = 0; i < streamCount; i++) {
       const offset = buf.readUInt32LE(p);
       const size = buf.readUInt32LE(p + 4);
-      let end = p + 8;
-      while (buf[end] !== 0) end++;
+      // indexOf, not a scan for 0: past the end of a cut-short file buf[i] is undefined, never 0, and the loop never ends.
+      const end = buf.indexOf(0, p + 8);
+      if (end < 0) fail("corrupt metadata stream header");
       const name = buf.toString("ascii", p + 8, end);
       this.heaps[name] = { offset: metadata + offset, size };
       p += 8 + Math.ceil((end - (p + 8) + 1) / 4) * 4;
@@ -283,8 +302,9 @@ class Metadata {
     const heap = this.heaps["#Strings"];
     if (!heap || !index) return "";
     const start = heap.offset + index;
-    let end = start;
-    while (this.buf[end] !== 0) end++;
+    // indexOf, not a scan for 0, so a truncated #Strings heap can't hang the extension host.
+    const end = start < this.buf.length ? this.buf.indexOf(0, start) : -1;
+    if (end < 0) throw new NotAnAssemblyError(TRUNCATED);
     return this.buf.toString("utf8", start, end);
   }
 
@@ -293,10 +313,13 @@ class Metadata {
     if (!heap || !index) return Buffer.alloc(0);
     const { value, length } = this.compressed(heap.offset + index);
     const start = heap.offset + index + length;
+    // A short slice would read as a different (wrong) public key or token.
+    if (start + value > this.buf.length) throw new NotAnAssemblyError(TRUNCATED);
     return this.buf.subarray(start, start + value);
   }
 
   private compressed(p: number): { value: number; length: number } {
+    if (p >= this.buf.length) throw new NotAnAssemblyError(TRUNCATED);
     const b = this.buf[p];
     if ((b & 0x80) === 0) return { value: b, length: 1 };
     if ((b & 0xc0) === 0x80) return { value: ((b & 0x3f) << 8) | this.buf[p + 1], length: 2 };

@@ -77,10 +77,121 @@ const tmp = () => {
     assert.deepStrictEqual(st, { kind: "insert", table: "account", alias: "account", columns: ["name", "revenue"], rows: [["A", 1], ["B", null]] });
     assert.throws(() => sql.parseStatement("INSERT INTO account (name) VALUES ('A'"), /Expected "\)"|Expected \)/);
   });
+  await test("sql: OPTION (BYPASS ...) hints on UPDATE, DELETE and INSERT; not on SELECT", () => {
+    const u = sql.parseStatement("UPDATE incident SET title = 'x' WHERE statecode = 0 OPTION (BYPASS PLUGINS, BYPASS FLOWS)");
+    assert.deepStrictEqual([u.kind, u.where.kind, u.hints], ["update", "cmp", ["bypass plugins", "bypass flows"]]);
+    assert.deepStrictEqual(sql.parseStatement("DELETE FROM incident OPTION (BYPASS SYNC PLUGINS, BYPASS ASYNC PLUGINS, BYPASS SYNC PLUGINS);").hints, ["bypass sync plugins", "bypass async plugins"]);
+    assert.deepStrictEqual(sql.parseStatement("UPDATE i SET i.title = 'x' FROM incident i WHERE i.statecode = 0 OPTION (BYPASS FLOWS)").hints, ["bypass flows"]);
+    assert.deepStrictEqual(sql.parseStatement("INSERT INTO account (name) VALUES ('A') OPTION (BYPASS PLUGINS)").hints, ["bypass plugins"]);
+    assert.strictEqual("hints" in sql.parseStatement("DELETE FROM incident"), false, "no hints key without OPTION");
+    assert.throws(() => sql.parseStatement("DELETE FROM incident OPTION (NOLOCK)"), /OPTION takes BYPASS PLUGINS, BYPASS SYNC PLUGINS, BYPASS ASYNC PLUGINS or BYPASS FLOWS, not near "NOLOCK"/);
+    assert.throws(() => sql.parseStatement("DELETE FROM incident OPTION (BYPASS WORKFLOWS)"), /BYPASS takes PLUGINS, SYNC PLUGINS, ASYNC PLUGINS or FLOWS, not near "WORKFLOWS"/);
+    assert.throws(() => sql.parseStatement("SELECT name FROM account OPTION (BYPASS PLUGINS)"), /OPTION \(BYPASS \.\.\.\) goes on UPDATE, DELETE and INSERT; a SELECT runs no plug-ins or flows/);
+  });
   await test("sql: UPDATE with alias and DELETE without WHERE", () => {
     const u = sql.parseStatement("UPDATE account a SET a.fax = '1' WHERE a.name = 'x'");
     assert.deepStrictEqual([u.kind, u.alias, u.sets], ["update", "a", [{ column: "fax", value: "1" }]]);
     assert.deepStrictEqual(sql.parseStatement("DELETE account"), { kind: "delete", table: "account", alias: "account", where: undefined });
+  });
+  await test("sql: SQL Server's UPDATE alias ... FROM table alias and DELETE alias FROM table alias", () => {
+    const u = sql.parseStatement("UPDATE i SET i.acme_document = NULL FROM incident i WHERE i.title LIKE 'B%' AND i.acme_document IS NOT NULL");
+    assert.deepStrictEqual([u.kind, u.table, u.alias, u.sets, u.where.kind], ["update", "incident", "i", [{ column: "acme_document", value: null }], "and"]);
+    assert.deepStrictEqual(sql.parseStatement("UPDATE incident SET title = 'x' FROM incident"), { kind: "update", table: "incident", alias: "incident", sets: [{ column: "title", value: "x" }], where: undefined });
+    const d = sql.parseStatement("DELETE i FROM incident AS i WHERE i.statecode = 1");
+    assert.deepStrictEqual([d.kind, d.table, d.alias], ["delete", "incident", "i"]);
+    assert.throws(() => sql.parseStatement("UPDATE x SET title = 'x' FROM incident i"), /UPDATE x doesn't match FROM incident i\. Write UPDATE i \.\.\. FROM incident i, or leave FROM out/);
+    assert.throws(() => sql.parseStatement("UPDATE i SET title = 'x' FROM incident i JOIN account a ON a.accountid = i.customerid"), /UPDATE \.\.\. FROM takes one table/);
+    assert.throws(() => sql.parseStatement("UPDATE i SET i.title = 'x' FROM incident WHERE i.statecode = 0"), /UPDATE i doesn't match FROM incident\. Write FROM incident i so i is its alias, or UPDATE incident \.\.\. FROM incident\./);
+  });
+
+  await test("sql: EXISTS becomes a link-entity of type any inside the filter", () => {
+    const x = flat(tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid AND contact.statecode = 0)").fetchXml);
+    assert.match(x, /<entity name="account"><attribute name="name" \/><filter><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any"><filter><condition attribute="statecode" operator="eq" value="0" \/><\/filter><\/link-entity><\/filter><\/entity>/);
+  });
+  await test("sql: NOT EXISTS with no other conditions is a self-closing not any link", () => {
+    const x = flat(tr("SELECT name FROM account a WHERE NOT EXISTS (SELECT * FROM contact c WHERE c.parentcustomerid = a.accountid)").fetchXml);
+    assert.match(x, /<filter><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="not any" \/><\/filter>/);
+  });
+  await test("sql: IN (SELECT col) puts the selected column in from and the outer column in to", () => {
+    const x = flat(tr("SELECT name FROM account WHERE accountid IN (SELECT parentcustomerid FROM contact WHERE firstname LIKE 'A%')").fetchXml);
+    assert.match(x, /<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any"><filter><condition attribute="firstname" operator="like" value="A%" \/><\/filter><\/link-entity>/);
+    const y = flat(tr("SELECT name FROM account a WHERE a.accountid NOT IN (SELECT c.parentcustomerid FROM contact c)").fetchXml);
+    assert.match(y, /<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="not any" \/>/);
+  });
+  await test("sql: subqueries compose with AND, OR and NOT (De Morgan flips any and not any)", () => {
+    const x = flat(tr("SELECT name FROM account WHERE statecode = 1 OR EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid)").fetchXml);
+    assert.match(x, /<filter type="or"><condition attribute="statecode" operator="eq" value="1" \/><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any" \/><\/filter>/);
+    const y = flat(tr("SELECT name FROM account WHERE NOT (statecode = 1 OR accountid IN (SELECT parentcustomerid FROM contact))").fetchXml);
+    assert.match(y, /<filter type="and"><condition attribute="statecode" operator="ne" value="1" \/><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="not any" \/><\/filter>/);
+    // An outer NOT doesn't reach into the subquery's own WHERE, and NOT NOT cancels out.
+    const z = flat(tr("SELECT name FROM account WHERE NOT NOT EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid AND NOT (contact.statecode = 1))").fetchXml);
+    assert.match(z, /link-type="any"><filter><condition attribute="statecode" operator="ne" value="1" \/><\/filter><\/link-entity>/);
+    const w = flat(tr("SELECT name FROM account WHERE statecode = 0 AND NOT EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid AND (statecode = 0 OR firstname = 'x'))").fetchXml);
+    assert.match(w, /<filter type="and"><condition attribute="statecode" operator="eq" value="0" \/><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="not any"><filter type="or"><condition attribute="statecode" operator="eq" value="0" \/><condition attribute="firstname" operator="eq" value="x" \/><\/filter><\/link-entity><\/filter>/);
+  });
+  await test("sql: subquery correlation on aliases, either way round, bracketed and case-insensitive", () => {
+    const x = flat(tr("SELECT a.name FROM account AS a WHERE exists (select 1 from [contact] AS c where A.AccountId = C.ParentCustomerId)").fetchXml);
+    assert.match(x, /<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any" \/>/);
+    // The outer table's own name qualifies its columns, and a self-referencing subquery needs an alias.
+    const y = flat(tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM account child WHERE child.parentaccountid = account.accountid AND child.statecode = 0)").fetchXml);
+    assert.match(y, /<link-entity name="account" from="parentaccountid" to="accountid" link-type="any"><filter><condition attribute="statecode" operator="eq" value="0" \/><\/filter><\/link-entity>/);
+    // Joined tables keep their entityname conditions beside the subquery.
+    const z = flat(tr("SELECT a.name FROM account a JOIN contact c ON c.contactid = a.primarycontactid WHERE c.statecode = 0 AND EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = a.accountid)").fetchXml);
+    assert.match(z, /<filter type="and"><condition entityname="c" attribute="statecode" operator="eq" value="0" \/><link-entity name="task" from="regardingobjectid" to="accountid" link-type="any" \/><\/filter>/);
+  });
+  await test("sql: a subquery inside a subquery nests the links", () => {
+    const x = flat(tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c WHERE c.parentcustomerid = account.accountid AND NOT EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = c.contactid AND t.statecode = 0))").fetchXml);
+    assert.match(x, /<filter><link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any"><filter><link-entity name="task" from="regardingobjectid" to="contactid" link-type="not any"><filter><condition attribute="statecode" operator="eq" value="0" \/><\/filter><\/link-entity><\/filter><\/link-entity><\/filter>/);
+  });
+  await test("sql: JOINs inside a subquery nest inside its link, with their conditions in their own filter", () => {
+    const x = flat(tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c JOIN systemuser u ON u.systemuserid = c.ownerid WHERE c.parentcustomerid = account.accountid AND u.isdisabled = 0 AND c.statecode = 0)").fetchXml);
+    assert.match(x, /<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any"><filter><condition attribute="statecode" operator="eq" value="0" \/><\/filter><link-entity name="systemuser" from="systemuserid" to="ownerid" alias="u" link-type="inner"><filter><condition attribute="isdisabled" operator="eq" value="0" \/><\/filter><\/link-entity><\/link-entity>/);
+    // IN with a JOIN: the selected column still comes from the subquery's own table.
+    const y = flat(tr("SELECT name FROM account WHERE accountid IN (SELECT c.parentcustomerid FROM contact c JOIN systemuser u ON u.systemuserid = c.ownerid WHERE u.isdisabled = 0)").fetchXml);
+    assert.match(y, /<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any"><link-entity name="systemuser" from="systemuserid" to="ownerid" alias="u" link-type="inner"><filter><condition attribute="isdisabled" operator="eq" value="0" \/><\/filter><\/link-entity><\/link-entity>/);
+  });
+  await test("sql: a subquery linked to an INNER JOINed table goes inside that join", () => {
+    const x = flat(tr("SELECT a.name FROM account a JOIN contact c ON c.contactid = a.primarycontactid WHERE a.statecode = 0 AND NOT EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = c.contactid)").fetchXml);
+    assert.match(x, /<entity name="account"><attribute name="name" \/><filter><condition attribute="statecode" operator="eq" value="0" \/><\/filter><link-entity name="contact" from="contactid" to="primarycontactid" alias="c" link-type="inner"><filter><link-entity name="task" from="regardingobjectid" to="contactid" link-type="not any" \/><\/filter><\/link-entity><\/entity>/);
+    // The WHERE's other conditions on the joined table stay in the root filter with entityname, as before.
+    const y = flat(tr("SELECT a.name FROM account a JOIN contact c ON c.contactid = a.primarycontactid WHERE c.statecode = 0 AND c.contactid IN (SELECT regardingobjectid FROM task)").fetchXml);
+    assert.match(y, /<filter><condition entityname="c" attribute="statecode" operator="eq" value="0" \/><\/filter><link-entity name="contact"[^>]*link-type="inner"><filter><link-entity name="task" from="regardingobjectid" to="contactid" link-type="any" \/><\/filter><\/link-entity>/);
+  });
+  await test("sql: subqueries in UPDATE and DELETE", () => {
+    const st = sql.parseStatement("DELETE FROM contact WHERE NOT EXISTS (SELECT 1 FROM account WHERE account.accountid = contact.parentcustomerid)");
+    const select = { distinct: false, items: [{ kind: "all" }], from: { table: "contact", alias: "contact" }, joins: [], where: st.where, groupBy: [], orderBy: [] };
+    assert.match(flat(sql.translateQuery(select).fetchXml), /<filter><link-entity name="account" from="accountid" to="parentcustomerid" link-type="not any" \/><\/filter>/);
+    const u = sql.parseStatement("UPDATE account SET fax = NULL WHERE accountid IN (SELECT parentcustomerid FROM contact WHERE statecode = 1)");
+    assert.strictEqual(u.where.kind, "sub");
+  });
+  await test("sql: clear errors for subqueries FetchXML can't express", () => {
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE statecode = 0)"), /needs a condition linking it to account, like WHERE contact\.<column> = account\.accountid/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.createdon > account.createdon)"), /linked to the outer query with =, not >/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid AND account.statecode = 0)"), /can only filter contact's columns; account\.statecode belongs to the outer query/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid OR contact.statecode = 0)"), /must be joined to the rest with AND, not OR/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE parentcustomerid = accountid)"), /Comparing two columns of contact isn't supported/);
+    assert.throws(() => tr("SELECT name FROM account WHERE accountid IN (SELECT parentcustomerid FROM contact WHERE contact.ownerid = account.ownerid)"), /one condition linking it to the outer query; contact\.ownerid = account\.ownerid is a second one/);
+    assert.throws(() => tr("SELECT name FROM account WHERE accountid IN (SELECT * FROM contact)"), /IN \(SELECT \.\.\.\) needs exactly one column/);
+    assert.throws(() => tr("SELECT name FROM account WHERE accountid IN (SELECT a.accountid FROM contact c)"), /must come from c, not a/);
+    assert.throws(() => tr("SELECT name FROM account WHERE revenue = (SELECT MAX(revenue) FROM account)"), /= \(SELECT \.\.\.\) isn't supported\. Use column IN/);
+    assert.throws(() => tr("SELECT name, (SELECT COUNT(*) FROM contact) FROM account"), /Subqueries in SELECT aren't supported/);
+    assert.throws(() => tr("SELECT name FROM (SELECT name FROM account) x"), /Subqueries in FROM aren't supported/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM account WHERE account.parentaccountid = account.accountid)"), /alias "account" is already used by the outer query/);
+    assert.throws(() => tr("SELECT a.name FROM account a WHERE EXISTS (SELECT 1 FROM contact c JOIN task a ON a.regardingobjectid = c.contactid WHERE c.parentcustomerid = a.accountid)"), /alias "a" is already used by the outer query/);
+    // Linked to a joined table: INNER JOIN and AND only.
+    assert.throws(() => tr("SELECT a.name FROM account a LEFT JOIN contact c ON c.contactid = a.primarycontactid WHERE EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = c.contactid)"), /can't be linked to c, a LEFT JOINed table/);
+    assert.throws(() => tr("SELECT a.name FROM account a JOIN contact c ON c.contactid = a.primarycontactid WHERE a.statecode = 1 OR EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = c.contactid)"), /linked to the joined table c must be combined with the rest of the WHERE using AND, not OR/);
+    // Inside a subquery: INNER JOIN only, conditions on the joined table with AND, the link through the subquery's own table, to the query directly around it.
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c LEFT JOIN systemuser u ON u.systemuserid = c.ownerid WHERE c.parentcustomerid = account.accountid)"), /A subquery supports INNER JOIN only/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c JOIN systemuser u ON u.systemuserid = c.ownerid WHERE c.parentcustomerid = account.accountid AND (u.isdisabled = 0 OR c.statecode = 1))"), /condition on the joined table u \(u\.isdisabled\) must be combined with the rest of the subquery's WHERE using AND/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c JOIN task t ON t.regardingobjectid = c.contactid WHERE t.ownerid = account.ownerid)"), /links to the outer query through t, a table it JOINs/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact c WHERE c.parentcustomerid = account.accountid AND EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = account.accountid))"), /linked to the query directly around it \(c\), not to account further out/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid ORDER BY createdon)"), /ORDER isn't supported in a subquery/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT COUNT(*) FROM contact WHERE contact.parentcustomerid = account.accountid)"), /COUNT\(\) isn't supported in a subquery/);
+    assert.throws(() => tr("SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE contact.parentcustomerid = account.accountid"), /Expected "\)" near the end of the query/);
+    // Outside a subquery, column = column still gets the old explanation.
+    assert.throws(() => tr("SELECT name FROM account WHERE name = fullname"), /Expected a value/);
+    assert.throws(() => tr("SELECT name FROM account WHERE name = account.fullname"), /Comparing one column to another isn't supported/);
   });
 
   // ---------- FetchXML detection ----------
@@ -305,6 +416,349 @@ const tmp = () => {
     assert.strictEqual(ribbon.scanRibbonFunctions(dir, true).get("x.js")[0].where, "c", "fresh");
   });
 
+  // ---------- command bar model (Open Command Bar…) ----------
+  const rm = out("core/ribbonModel.js");
+  const RIBBON_XML = `<RibbonDefinitions><RibbonDefinition><UI><Ribbon><Tabs>
+    <Tab Id="Mscrm.Form.account.MainTab" Command="Mscrm.FormTab" Title="$Resources:Ribbon.Form.MainTab" Sequence="10"><Groups>
+      <Group Id="Mscrm.Form.account.MainTab.Save" Command="Mscrm.Enabled" Sequence="10" Title="$Resources:Ribbon.Form.MainTab.Save"><Controls Id="Mscrm.Form.account.MainTab.Save.Controls">
+        <Button Id="Mscrm.Form.account.Save" Command="Mscrm.SavePrimary" Sequence="10" LabelText="$Resources:Ribbon.Form.MainTab.Save" Image16by16="/_imgs/ribbon/Save_16.png" ModernImage="Save" />
+        <Button Id="acme.account.Approve.Button" Command="acme.account.Approve.Command" Sequence="25" LabelText="$LocLabels:acme.account.Approve.Button.LabelText" ToolTipTitle="$LocLabels:acme.account.Approve.Button.ToolTipTitle" TemplateAlias="o1" />
+        <SplitButton Id="Mscrm.Form.account.Delete.Split" Command="Mscrm.DeletePrimaryRecord" Sequence="30" LabelText="$Resources:Ribbon.HomepageGrid.Delete"><Menu Id="Mscrm.Form.account.Delete.Menu"><MenuSection Id="Mscrm.Form.account.Delete.Section" Sequence="10" Title="$Resources:Ribbon.Section"><Controls Id="c"><Button Id="Mscrm.Form.account.Delete.Item" Command="Mscrm.DeletePrimaryRecord" LabelText="$Resources:Ribbon.Delete" /></Controls></MenuSection></Menu></SplitButton>
+        <FlyoutAnchor Id="Mscrm.Form.account.Flows" Command="Mscrm.Flows" Sequence="40" LabelText="$Resources:Ribbon.Flows" PopulateDynamically="true" PopulateQueryCommand="Mscrm.Flows.Populate" />
+      </Controls></Group>
+      <Group Id="Mscrm.Form.account.MainTab.Actions" Sequence="20" Title="$Resources:Ribbon.Form.MainTab.Actions"><Controls Id="x" /></Group>
+    </Groups></Tab></Tabs></Ribbon></UI>
+    <CommandDefinitions>
+      <CommandDefinition Id="acme.account.Approve.Command"><EnableRules><EnableRule Id="acme.account.CanApprove" /><EnableRule Id="Mscrm.FormStateExisting" /></EnableRules><DisplayRules><DisplayRule Id="acme.account.ApproverOnly" /></DisplayRules><Actions><JavaScriptFunction FunctionName="Acme.Account.approve" Library="$webresource:acme_/account/ribbon.js"><CrmParameter Value="PrimaryControl" /><StringParameter Value="fast" /></JavaScriptFunction></Actions></CommandDefinition>
+      <CommandDefinition Id="Mscrm.SavePrimary"><EnableRules><EnableRule Id="Mscrm.CanSavePrimary" /></EnableRules><Actions><JavaScriptFunction FunctionName="Mscrm.RibbonActions.saveForm" Library="/_static/_common/scripts/RibbonActions.js"><CrmParameter Value="PrimaryControl" /></JavaScriptFunction></Actions></CommandDefinition>
+      <CommandDefinition Id="Mscrm.Flows"><Actions><Url Address="https://flow.microsoft.com" PassParams="true" /></Actions></CommandDefinition>
+    </CommandDefinitions>
+    <RuleDefinitions>
+      <EnableRules>
+        <EnableRule Id="acme.account.CanApprove"><CustomRule FunctionName="Acme.Account.canApprove" Library="$webresource:acme_/account/ribbon.js" Default="false"><CrmParameter Value="PrimaryControl" /></CustomRule><ValueRule Field="statecode" Value="0" /></EnableRule>
+        <EnableRule Id="Mscrm.FormStateExisting"><FormStateRule State="Existing" /></EnableRule>
+        <EnableRule Id="Mscrm.CanSavePrimary"><FormStateRule State="ReadOnly" InvertResult="true" /><SelectionCountRule Minimum="1" Maximum="1" AppliesTo="SelectedEntity" /></EnableRule>
+      </EnableRules>
+      <DisplayRules><DisplayRule Id="acme.account.ApproverOnly"><EntityPrivilegeRule EntityName="account" PrivilegeType="Write" PrivilegeDepth="Local" /><OrRule><Or><CrmClientTypeRule Type="Web" /><HideForTabletExperienceRule /></Or><Or><CrmClientTypeRule Type="Outlook" InvertResult="true" /></Or></OrRule></DisplayRule></DisplayRules>
+    </RuleDefinitions>
+    <LocLabels><LocLabel Id="acme.account.Approve.Button.LabelText"><Titles><Title languagecode="1031" description="Genehmigen" /><Title languagecode="1033" description="Approve &amp; close" /></Titles></LocLabel><LocLabel Id="acme.account.Approve.Button.ToolTipTitle"><Titles><Title languagecode="1031" description="Genehmigt den Datensatz" /></Titles></LocLabel></LocLabels>
+  </RibbonDefinition></RibbonDefinitions>`;
+  const RIBBON_DIFF = `<RibbonDiffXml>
+    <CustomActions>
+      <CustomAction Id="acme.account.Approve.CustomAction" Location="Mscrm.Form.account.MainTab.Save.Controls._children" Sequence="25"><CommandUIDefinition><Button Id="acme.account.Approve.Button" Command="acme.account.Approve.Command" LabelText="$LocLabels:acme.account.Approve.Button.LabelText" ToolTipTitle="$LocLabels:acme.account.Approve.Button.ToolTipTitle" TemplateAlias="o1" /></CommandUIDefinition></CustomAction>
+      <CustomAction Id="acme.account.Reject.CustomAction" Location="Mscrm.Form.account.MainTab.Save.Controls._children" Sequence="45"><CommandUIDefinition><Button Id="acme.account.Reject.Button" Command="acme.account.Reject.Command" LabelText="Reject" /></CommandUIDefinition></CustomAction>
+      <CustomAction Id="acme.account.Lost.CustomAction" Location="Mscrm.HomepageGrid.account.MainTab.Nope.Controls._children" Sequence="10"><CommandUIDefinition><Button Id="acme.account.Lost.Button" Command="acme.account.Reject.Command" LabelText="Lost" /></CommandUIDefinition></CustomAction>
+    </CustomActions>
+    <HideCustomActions><HideCustomAction HideActionId="Mscrm.Form.account.Assign" Location="Mscrm.Form.account.MainTab.Actions.Controls._children" /></HideCustomActions>
+    <CommandDefinitions>
+      <CommandDefinition Id="acme.account.Approve.Command"><EnableRules><EnableRule Id="acme.account.CanApprove" /></EnableRules><Actions><JavaScriptFunction FunctionName="Acme.Account.approve" Library="$webresource:acme_/account/ribbon.js" /></Actions></CommandDefinition>
+      <CommandDefinition Id="acme.account.Reject.Command"><Actions><JavaScriptFunction FunctionName="Acme.Account.reject" Library="$webresource:acme_/missing.js" /></Actions></CommandDefinition>
+    </CommandDefinitions>
+    <RuleDefinitions><EnableRules><EnableRule Id="acme.account.CanApprove"><CustomRule FunctionName="Acme.Account.canApprove" Library="$webresource:acme_/account/ribbon.js" /></EnableRule></EnableRules><DisplayRules /></RuleDefinitions>
+    <LocLabels><LocLabel Id="acme.account.Approve.Button.LabelText"><Titles><Title languagecode="1033" description="Approve &amp; close" /><Title languagecode="1031" description="Genehmigen" /></Titles></LocLabel></LocLabels>
+  </RibbonDiffXml>`;
+  const loaded = () => rm.applyDiff(rm.parseRibbonXml(RIBBON_XML, "account", "Form"), rm.parseRibbonDiff(RIBBON_DIFF));
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+
+  await test("command bar model: tabs, groups and controls in sequence order, with menus, labels and commands", () => {
+    const m = rm.parseRibbonXml(RIBBON_XML, "account", "Form");
+    assert.deepStrictEqual(m.tabs.map((t) => [t.id, t.location, t.label, t.origin, t.groups.map((g) => g.label)]), [["Mscrm.Form.account.MainTab", "Form", "MainTab", "microsoft", ["Save", "Actions"]]]);
+    const save = m.tabs[0].groups[0];
+    assert.deepStrictEqual(save.controls.map((c) => [c.id, c.kind, c.tag, c.label, c.origin, c.sequence]), [
+      ["Mscrm.Form.account.Save", "button", "Button", "Save", "microsoft", 10],
+      ["acme.account.Approve.Button", "button", "Button", "Approve & close", "other", 25],
+      ["Mscrm.Form.account.Delete.Split", "splitButton", "SplitButton", "Delete", "microsoft", 30],
+      ["Mscrm.Form.account.Flows", "flyout", "FlyoutAnchor", "Flows", "microsoft", 40],
+    ]);
+    assert.strictEqual(save.controls[1].tooltipTitle, "Genehmigt den Datensatz", "a label without English takes the first language");
+    assert.deepStrictEqual([save.controls[0].image16, save.controls[0].modernImage, save.controls[0].attrs.Image16by16], ["/_imgs/ribbon/Save_16.png", "Save", "/_imgs/ribbon/Save_16.png"]);
+    assert.deepStrictEqual(save.controls[2].children.map((s) => [s.kind, s.label, s.children.map((b) => [b.kind, b.id, b.command])]), [["menuSection", "Section", [["button", "Mscrm.Form.account.Delete.Item", "Mscrm.DeletePrimaryRecord"]]]]);
+    assert.strictEqual(save.controls[3].populateQueryCommand, "Mscrm.Flows.Populate");
+    const cmd = m.commands["acme.account.Approve.Command"];
+    assert.deepStrictEqual([cmd.enableRules, cmd.displayRules, cmd.origin], [["acme.account.CanApprove", "Mscrm.FormStateExisting"], ["acme.account.ApproverOnly"], "other"]);
+    assert.deepStrictEqual(cmd.actions.map((a) => [a.kind, a.functionName, a.webResource, a.parameters.map((p) => p.kind + "=" + p.value)]), [["JavaScriptFunction", "Acme.Account.approve", "acme_/account/ribbon.js", ["CrmParameter=PrimaryControl", "StringParameter=fast"]]]);
+    assert.strictEqual(m.commands["Mscrm.SavePrimary"].actions[0].webResource, undefined, "a platform script isn't a web resource");
+    assert.deepStrictEqual(m.commands["Mscrm.Flows"].actions.map((a) => [a.kind, a.url]), [["Url", "https://flow.microsoft.com"]]);
+    assert.strictEqual(rm.parseRibbonXml(RIBBON_XML, "account").tabs[0].location, "Form", "without a location filter, the tab's Id says where it is");
+    assert.deepStrictEqual([rm.locationOfId("Mscrm.HomepageGrid.account.MainTab"), rm.locationOfId("Mscrm.SubGrid.account.MainTab"), rm.locationOfId("acme.tab")], ["HomepageGrid", "SubGrid", "Other"]);
+    assert.strictEqual(rm.resolveLabel("$Resources:Ribbon.HomepageGrid.MainTab.Management.Assign", {}), "Assign");
+  });
+  await test("command bar model: rules in words", () => {
+    const m = rm.parseRibbonXml(RIBBON_XML, "account", "Form");
+    assert.deepStrictEqual(m.enableRules["acme.account.CanApprove"].steps.map((s) => [s.kind, s.text, s.webResource, s.functionName]), [
+      ["CustomRule", "Acme.Account.canApprove in acme_/account/ribbon.js returns true (false until it answers).", "acme_/account/ribbon.js", "Acme.Account.canApprove"],
+      ["ValueRule", 'statecode is "0".', undefined, undefined],
+    ]);
+    assert.deepStrictEqual(m.enableRules["Mscrm.CanSavePrimary"].steps.map((s) => s.text), ["The form is not read-only.", "exactly 1 row is selected in the subgrid."]);
+    assert.deepStrictEqual(m.displayRules["acme.account.ApproverOnly"].steps.map((s) => s.text), [
+      "The user can write account records (at least their business unit's).",
+      "Any of: The client is Web and Hidden on tablets; or The client isn't Outlook.",
+    ]);
+    const words = (xml) => rm.explainRule(rm.parseXml(xml).children[0]);
+    assert.strictEqual(words('<FormStateRule State="Create" InvertResult="true" />'), "The form is not a new record.");
+    assert.strictEqual(words('<RecordPrivilegeRule PrivilegeType="Delete" AppliesTo="SelectedEntity" />'), "The user can delete this record (the selected row).");
+    assert.strictEqual(words('<EntityRule EntityName="contact" AppliesTo="SelectedEntity" Context="SubGridStandard" />'), "The selected rows' table is contact in a sub grid standard.");
+    assert.strictEqual(words('<SelectionCountRule Minimum="1" />'), "at least 1 row is selected.");
+    assert.strictEqual(words('<ValueRule Field="ownerid" Value="null" InvertResult="true" />'), "ownerid isn't empty.");
+    assert.strictEqual(words('<SomethingNewRule Foo="1" InvertResult="true" />'), "SomethingNewRule (Foo=1), inverted.");
+    // A step edited on the page is explained from its fields, parameters included.
+    assert.strictEqual(rm.explainStep({ kind: "CustomRule", attrs: { Default: "true" }, functionName: "Acme.ok", webResource: "acme_/x.js", parameters: [{ kind: "CrmParameter", value: "PrimaryControl" }], text: "" }), "Acme.ok in acme_/x.js returns true (true until it answers).");
+    assert.strictEqual(rm.explainStep({ kind: "FormStateRule", attrs: { State: "Existing", InvertResult: "true" }, parameters: [], text: "" }), "The form is not an existing record.");
+  });
+  await test("command bar model: the client's RibbonDiffXml marks its controls, commands and rules, adds local-only buttons and lists hidden ones", () => {
+    const m = rm.parseRibbonXml(RIBBON_XML, "account", "Form");
+    const diff = rm.parseRibbonDiff(RIBBON_DIFF);
+    assert.deepStrictEqual(diff.customActions.map((c) => [c.id, c.location, c.sequence, c.element.attrs.Id]), [
+      ["acme.account.Approve.CustomAction", "Mscrm.Form.account.MainTab.Save.Controls._children", 25, "acme.account.Approve.Button"],
+      ["acme.account.Reject.CustomAction", "Mscrm.Form.account.MainTab.Save.Controls._children", 45, "acme.account.Reject.Button"],
+      ["acme.account.Lost.CustomAction", "Mscrm.HomepageGrid.account.MainTab.Nope.Controls._children", 10, "acme.account.Lost.Button"],
+    ]);
+    assert.deepStrictEqual(diff.locLabels["acme.account.Approve.Button.LabelText"], [{ languagecode: "1033", description: "Approve & close" }, { languagecode: "1031", description: "Genehmigen" }]);
+    assert.strictEqual(rm.groupOfLocation("Mscrm.Form.account.MainTab.Save.Controls._children"), "Mscrm.Form.account.MainTab.Save");
+    rm.applyDiff(m, diff);
+    const save = m.tabs[0].groups[0];
+    assert.deepStrictEqual(save.controls.map((c) => [c.id, c.origin, !!c.localOnly]), [
+      ["Mscrm.Form.account.Save", "microsoft", false],
+      ["acme.account.Approve.Button", "client", false],
+      ["Mscrm.Form.account.Delete.Split", "microsoft", false],
+      ["Mscrm.Form.account.Flows", "microsoft", false],
+      ["acme.account.Reject.Button", "client", true],
+    ], "the Reject button is in the diff but not in the environment yet; the Lost button's group doesn't exist, so it's left out");
+    assert.strictEqual(save.controls[4].label, "Reject");
+    assert.deepStrictEqual([m.commands["acme.account.Approve.Command"].origin, m.commands["acme.account.Reject.Command"].origin, m.commands["Mscrm.SavePrimary"].origin], ["client", "client", "microsoft"]);
+    assert.strictEqual(m.commands["acme.account.Approve.Command"].enableRules.length, 1, "the client's own command replaces the environment's: the local file may hold edits not imported yet");
+    assert.deepStrictEqual([m.enableRules["acme.account.CanApprove"].origin, m.displayRules["acme.account.ApproverOnly"].origin, m.enableRules["Mscrm.FormStateExisting"].origin], ["client", "other", "microsoft"]);
+    assert.deepStrictEqual(m.hidden, [{ id: "Mscrm.Form.account.Assign", location: "Mscrm.Form.account.MainTab.Actions.Controls._children", origin: "client" }]);
+    assert.strictEqual(m.customActions.length, 3, "the client's custom actions are kept for writing back");
+    assert.strictEqual(rm.applyDiff(m, diff).hidden.length, 1, "applying the same diff twice doesn't repeat the hidden control");
+    assert.strictEqual(m.customActions.length, 3);
+  });
+  await test("command bar model: JavaScript references are checked against the workspace's web resources", () => {
+    const m = loaded();
+    m.modern.push({ uniqueName: "acme_account_Go", name: "Go", label: "Go", location: 0, type: 0, hidden: false, disabled: false, onClick: { type: 2, functionName: "Acme.Account.go", library: "acme_/account/ribbon.js" }, visibility: { type: 0 }, icon: {} });
+    const handlers = out("core/handlers.js");
+    const files = { "acme_/account/ribbon.js": { file: "C:/acme/WebResources/acme_/account/ribbon.js", text: "var Acme = Acme || {};\nAcme.Account = {\n  approve: function (primaryControl) {},\n};\n// Acme.Account.canApprove = function () {}\n" } };
+    const problems = rm.checkRibbonReferences(m, (wr) => files[wr], (text, fn) => !!handlers.findFunction(text, fn));
+    assert.deepStrictEqual(problems.map((p) => [p.kind, p.id, p.index, p.text, p.file && path.basename(p.file)]), [
+      ["command", "acme.account.Reject.Command", 0, "acme_/missing.js isn't a web resource in the workspace.", undefined],
+      ["enable rule", "acme.account.CanApprove", 0, "Acme.Account.canApprove isn't defined in ribbon.js.", "ribbon.js"],
+      ["modern command", "acme_account_Go", 0, "Acme.Account.go isn't defined in ribbon.js.", "ribbon.js"],
+    ], "platform scripts (/_static/…) are never checked; a commented-out definition doesn't count");
+    assert.deepStrictEqual(rm.problemCounts(problems), { "command:acme.account.Reject.Command": 1, "enable rule:acme.account.CanApprove": 1, "modern command:acme_account_Go": 1 });
+    const panel = out("ui/panels/commandBarPanel.js");
+    assert.deepStrictEqual(problems.map(panel.problemKey), ["action:acme.account.Reject.Command:0", "rule:enable:acme.account.CanApprove:0", "modern:acme_account_Go"]);
+    const draft = { model: m, publish: false, solution: "", writeLocal: true };
+    assert.deepStrictEqual(panel.commandBarStatus(draft, clone(m), "acme", problems), { problems: [], summary: "No changes yet · 3 JavaScript warnings", blocked: true }, "warnings don't block; no change means nothing to save");
+    const d2 = clone(draft);
+    d2.publish = true;
+    d2.model.hidden.push({ id: "Mscrm.Form.account.Save", location: "Mscrm.Form.account.MainTab.Save.Controls._children", origin: "client" });
+    assert.deepStrictEqual(panel.commandBarStatus(d2, m, "acme", []), { problems: [{ field: "solution", text: "Pick the solution to publish through." }], summary: "1 change · JavaScript references resolve", blocked: false });
+  });
+  await test("command bar model: the client's layer is written back as RibbonDiffXml and reads back the same", () => {
+    const m = loaded();
+    const layer = rm.serializeRibbonDiff(m);
+    assert.deepStrictEqual(layer.counts, { controls: 3, hidden: 1, commands: 2, rules: 1, labels: 2 });
+    const again = rm.parseRibbonDiff(layer.xml);
+    assert.deepStrictEqual(again.customActions.map((c) => [c.id, c.location, c.sequence, c.element.name, c.element.attrs.Id, c.element.attrs.LabelText, c.element.attrs.Command, c.element.attrs.TemplateAlias, c.element.attrs.Sequence]), [
+      ["acme.account.Approve.CustomAction", "Mscrm.Form.account.MainTab.Save.Controls._children", 25, "Button", "acme.account.Approve.Button", "$LocLabels:acme.account.Approve.Button.LabelText", "acme.account.Approve.Command", "o1", "25"],
+      ["acme.account.Reject.CustomAction", "Mscrm.Form.account.MainTab.Save.Controls._children", 45, "Button", "acme.account.Reject.Button", "Reject", "acme.account.Reject.Command", "o1", "45"],
+      ["acme.account.Lost.CustomAction", "Mscrm.HomepageGrid.account.MainTab.Nope.Controls._children", 10, "Button", "acme.account.Lost.Button", "Lost", "acme.account.Reject.Command", undefined, undefined],
+    ], "the Lost button (its group isn't in the loaded ribbon) is written back as read; the Reject button keeps its custom action Id");
+    assert.deepStrictEqual(again.hidden, [{ id: "Mscrm.Form.account.Assign", location: "Mscrm.Form.account.MainTab.Actions.Controls._children" }]);
+    assert.deepStrictEqual(Object.keys(again.commands).sort(), ["acme.account.Approve.Command", "acme.account.Reject.Command"]);
+    assert.deepStrictEqual(again.commands["acme.account.Approve.Command"].enableRules, ["acme.account.CanApprove"], "the client's own command is what's written");
+    assert.deepStrictEqual(again.commands["acme.account.Approve.Command"].actions[0].parameters.map((p) => p.kind + "=" + p.value), []);
+    assert.deepStrictEqual(Object.keys(again.enableRules), ["acme.account.CanApprove"]);
+    assert.deepStrictEqual(again.enableRules["acme.account.CanApprove"].steps.map((s) => [s.kind, s.attrs.Default, s.parameters.length]), [["CustomRule", undefined, 0]]);
+    assert.deepStrictEqual(Object.keys(again.displayRules), [], "the display rule came from another solution, so it isn't the client's to write");
+    assert.deepStrictEqual(again.locLabels, {
+      "acme.account.Approve.Button.LabelText": [{ languagecode: "1033", description: "Approve & close" }, { languagecode: "1031", description: "Genehmigen" }],
+      "acme.account.Approve.Button.ToolTipTitle": [{ languagecode: "1033", description: "Genehmigt den Datensatz" }],
+    }, "every language of a label is kept; a label the diff didn't have gets the text the environment shows");
+    assert.match(layer.xml, /<Templates>\s*<RibbonTemplates Id="Mscrm.Templates" \/>\s*<\/Templates>/);
+    assert.match(layer.xml, /description="Approve &amp; close"/);
+    assert.match(layer.xml, /^<RibbonDiffXml xmlns:xsi=/);
+    assert.deepStrictEqual(rm.serializeRibbonDiff(rm.parseRibbonDiff(layer.xml) && rm.applyDiff(rm.parseRibbonXml(RIBBON_XML, "account", "Form"), again)).xml, layer.xml, "writing what was read gives the same text");
+    // A tab the diff adds is written back as it was read, with its label.
+    const tabDiff = rm.parseRibbonDiff('<RibbonDiffXml><CustomActions><CustomAction Id="acme.Tab.CA" Location="Mscrm.Tabs._children" Sequence="500"><CommandUIDefinition><Tab Id="acme.account.Tab" Title="$LocLabels:acme.account.Tab.Title" Sequence="500"><Scaling Id="acme.account.Tab.Scaling"><MaxSize Id="acme.account.Tab.MaxSize" GroupId="acme.account.Tab.Group" Sequence="10" Size="LargeMedium" /></Scaling><Groups Id="acme.account.Tab.Groups"><Group Id="acme.account.Tab.Group" Sequence="10" Title="$LocLabels:acme.account.Tab.Group.Title" Template="Mscrm.Templates.Flexible2"><Controls Id="acme.account.Tab.Group.Controls"><Button Id="acme.account.Tab.Go" Command="acme.Go" Sequence="10" LabelText="$LocLabels:acme.account.Tab.Go.LabelText" TemplateAlias="o1" /></Controls></Group></Groups></Tab></CommandUIDefinition></CustomAction></CustomActions><LocLabels><LocLabel Id="acme.account.Tab.Go.LabelText"><Titles><Title languagecode="1033" description="Go" /></Titles></LocLabel></LocLabels></RibbonDiffXml>');
+    const withTab = rm.applyDiff(rm.parseRibbonXml(RIBBON_XML, "account", "Form"), tabDiff);
+    const tabLayer = rm.serializeRibbonDiff(withTab);
+    assert.match(tabLayer.xml, /<CustomAction Id="acme.Tab.CA" Location="Mscrm.Tabs._children" Sequence="500">\s*<CommandUIDefinition>\s*<Tab Id="acme.account.Tab"[\s\S]*<MaxSize[\s\S]*<Button Id="acme.account.Tab.Go"/);
+    assert.deepStrictEqual(tabLayer.counts, { controls: 0, hidden: 0, commands: 0, rules: 0, labels: 1 });
+  });
+  await test("command bar model: edits show up as changes; what Dataverse would reject is a problem on its field", () => {
+    const m = loaded();
+    const before = clone(m);
+    const save = m.tabs[0].groups[0];
+    const approve = save.controls[1];
+    approve.label = "Approve now";
+    m.labels["acme.account.Approve.Button.LabelText"] = "Approve now";
+    m.hidden.push({ id: "Mscrm.Form.account.Save", location: "Mscrm.Form.account.MainTab.Save.Controls._children", origin: "client" });
+    const b = rm.newButton(m, save.id, "acme", "Escalate");
+    assert.deepStrictEqual([b.id, b.sequence, b.labelKey, b.origin, b.fresh, b.localOnly], ["acme.account.Escalate.Button", 55, "$LocLabels:acme.account.Escalate.Button.LabelText", "client", true, true]);
+    save.controls.push(b);
+    assert.deepStrictEqual(rm.ribbonChanges(before, m), ["changed Approve now", "added New button", "hid Save"]);
+    assert.deepStrictEqual(rm.ribbonEditProblems(m, { prefix: "acme" }), [{ field: "control:acme.account.Escalate.Button:command", text: "Pick or create the command the button runs." }]);
+    b.command = "acme.account.Approve.Command";
+    assert.deepStrictEqual(rm.ribbonEditProblems(m, { prefix: "acme" }), []);
+    b.id = "other.account.Escalate.Button";
+    b.sequence = undefined;
+    assert.deepStrictEqual(rm.ribbonEditProblems(m, { prefix: "acme" }).map((p) => p.text), ["Start the Id with acme (the publisher prefix).", "Give the button a sequence (its place in the group)."]);
+    b.id = "acme.account.Approve.Button";
+    b.sequence = 55;
+    assert.deepStrictEqual(rm.ribbonEditProblems(m, { prefix: "acme" }).map((p) => p.text), ["Another control has this Id.", "Another control has this Id."]);
+    b.id = "acme.account.Escalate.Button";
+    m.commands["acme.account.Nothing"] = { id: "acme.account.Nothing", enableRules: ["acme.account.Gone"], displayRules: [], actions: [], origin: "client", fresh: true };
+    m.enableRules["acme.Empty"] = { id: "acme.Empty", kind: "enable", steps: [{ kind: "CustomRule", attrs: {}, functionName: "", library: "", webResource: "", parameters: [], text: "" }], origin: "client", fresh: true };
+    assert.deepStrictEqual(rm.ribbonEditProblems(m, { prefix: "acme" }).map((p) => [p.field, p.text]), [
+      ["command:acme.account.Nothing:actions", "The command needs at least one action."],
+      ["command:acme.account.Nothing:enableRules", "There's no enable rule named acme.account.Gone."],
+      ["rule:enable:acme.Empty:step:0:function", "Name the function."],
+      ["rule:enable:acme.Empty:step:0:library", "Name the web resource that defines the function."],
+    ]);
+    const modern = { uniqueName: "x", name: "x", label: "", location: 0, type: 0, hidden: false, disabled: false, onClick: { type: 2, functionName: "bad name", library: "" }, visibility: { type: 0 }, icon: {}, fresh: true };
+    assert.deepStrictEqual(rm.ribbonEditProblems({ ...rm.emptyModel("account"), modern: [modern] }, { prefix: "acme" }).map((p) => p.text), [
+      "Start the unique name with acme_ (the publisher prefix).", "The button needs a label.", "Pick the app the command belongs to.", "Use a JavaScript name like Acme.Account.approve.", "Name the JavaScript web resource.",
+    ]);
+    assert.deepStrictEqual(rm.ribbonChanges(before, { ...before, modern: [{ ...modern, removed: false }] }), ["added modern command x"]);
+  });
+  await test("command bar model: the table's RibbonDiffXml is found in unpacked solutions and in customizations.xml", () => {
+    const dir = tmp();
+    const w = (f, t) => { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), t); };
+    w("Sol/Other/Solution.xml", "<ImportExportXml><SolutionManifest><UniqueName>AcmeCore</UniqueName></SolutionManifest></ImportExportXml>");
+    w("Sol/Entities/Account/Entity.xml", '<Entity><Name LocalizedName="Account" OriginalName="Account">Account</Name></Entity>');
+    w("Sol/Entities/Account/RibbonDiff.xml", RIBBON_DIFF);
+    w("Sol/Entities/Contact/Entity.xml", '<Entity><Name LocalizedName="Contact" OriginalName="Contact">Contact</Name></Entity>');
+    w("Sol/Entities/Contact/RibbonDiff.xml", '<RibbonDiffXml><HideCustomActions><HideCustomAction HideActionId="Mscrm.Form.contact.Delete" Location="x" /></HideCustomActions></RibbonDiffXml>');
+    w("Sol/Entities/Lead/Entity.xml", '<Entity><Name LocalizedName="Lead" OriginalName="Lead">Lead</Name></Entity>');
+    w("Packed/Other/Solution.xml", "<UniqueName>AcmePacked</UniqueName>");
+    w("Packed/Other/Customizations.xml", `<ImportExportXml><Entities><Entity><Name LocalizedName="Contact">Contact</Name><RibbonDiffXml><CustomActions /></RibbonDiffXml></Entity><Entity><Name LocalizedName="Account">Account</Name><RibbonDiffXml><HideCustomActions><HideCustomAction HideActionId="Mscrm.Form.account.Delete" Location="y" /></HideCustomActions></RibbonDiffXml></Entity></Entities></ImportExportXml>`);
+    const found = rm.findRibbonDiffs(dir, "account").sort((a, b) => a.solution.localeCompare(b.solution));
+    assert.deepStrictEqual(found.map((f) => [f.solution, path.basename(f.file), f.diff.customActions.length, f.diff.hidden.map((h) => h.id)]), [
+      ["AcmeCore", "RibbonDiff.xml", 3, ["Mscrm.Form.account.Assign"]],
+      ["AcmePacked", "Customizations.xml", 0, ["Mscrm.Form.account.Delete"]],
+    ]);
+    assert.strictEqual(rm.findRibbonDiffs(dir, "lead").length, 0);
+    assert.strictEqual(rm.ribbonDiffPathFor(dir, "lead"), path.join(dir, "Sol", "Entities", "Lead", "RibbonDiff.xml"), "a table folder without a diff yet is where a new one goes");
+    assert.strictEqual(rm.ribbonDiffPathFor(dir, "opportunity"), undefined);
+  });
+  await test("command bar: the ribbon XML is read out of the zip RetrieveEntityRibbon returns, one call per location", async () => {
+    const { writeZip } = out("core/zip.js");
+    const cb = out("commands/commandBar.js");
+    const zip = writeZip([{ name: "[Content_Types].xml", data: Buffer.from("<Types />") }, { name: "RibbonXml.xml", data: Buffer.from("\uFEFF<RibbonDefinitions />") }]);
+    assert.strictEqual(cb.ribbonXmlFromZip(zip.toString("base64")), "<RibbonDefinitions />");
+    assert.throws(() => cb.ribbonXmlFromZip(writeZip([{ name: "readme.txt", data: Buffer.from("") }]).toString("base64")), /no XML/);
+    // The three locations are fetched with the Web API's enum literal and merged in form, main grid, subgrid order.
+    const asked = [];
+    const dv = { getJson: async (p) => { asked.push(decodeURIComponent(p)); const loc = /Filters'(\w+)'/.exec(decodeURIComponent(p))[1]; return { CompressedEntityXml: writeZip([{ name: "RibbonXml.xml", data: Buffer.from(`<RibbonDefinitions><RibbonDefinition><UI><Ribbon><Tabs><Tab Id="Mscrm.${loc}.account.MainTab" Sequence="10" /></Tabs></Ribbon></UI></RibbonDefinition></RibbonDefinitions>`) }]).toString("base64") }; } };
+    const m = await cb.loadCommandBar(dv, "account");
+    assert.deepStrictEqual(asked, ["Form", "HomepageGrid", "SubGrid"].map((l) => `RetrieveEntityRibbon(EntityName=@p1,RibbonLocationFilter=@p2)?@p1='account'&@p2=Microsoft.Dynamics.CRM.RibbonLocationFilters'${l}'`));
+    assert.deepStrictEqual(m.tabs.map((t) => t.location), ["Form", "HomepageGrid", "SubGrid"]);
+  });
+  await test("command bar: the RibbonDiffXml is written to RibbonDiff.xml or into the table's entity of a customizations.xml, keeping line endings", () => {
+    const cb = out("commands/commandBar.js");
+    const dir = tmp();
+    const f = path.join(dir, "Sol", "Entities", "Account", "RibbonDiff.xml");
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, '<?xml version="1.0"?>\r\n<RibbonDiffXml />\r\n');
+    cb.writeLocalRibbonDiff(f, "account", "<RibbonDiffXml>\n  <CustomActions />\n</RibbonDiffXml>");
+    assert.strictEqual(fs.readFileSync(f, "utf8"), '<?xml version="1.0" encoding="utf-8"?>\r\n<RibbonDiffXml>\r\n  <CustomActions />\r\n</RibbonDiffXml>\r\n');
+    const fresh = path.join(dir, "Sol", "Entities", "Lead", "RibbonDiff.xml");
+    cb.writeLocalRibbonDiff(fresh, "lead", "<RibbonDiffXml />");
+    assert.strictEqual(fs.readFileSync(fresh, "utf8"), '<?xml version="1.0" encoding="utf-8"?>\n<RibbonDiffXml />\n', "a new file gets LF");
+    const c = path.join(dir, "Packed", "Other", "Customizations.xml");
+    fs.mkdirSync(path.dirname(c), { recursive: true });
+    fs.writeFileSync(c, "<ImportExportXml><Entities><Entity><Name>Account</Name><EntityInfo><entity Name=\"Account\"><attributes><attribute><Name>name</Name></attribute></attributes></entity></EntityInfo><FormXml /></Entity></Entities></ImportExportXml>");
+    cb.writeLocalRibbonDiff(c, "account", "<RibbonDiffXml><X /></RibbonDiffXml>");
+    assert.match(fs.readFileSync(c, "utf8"), /<FormXml \/><RibbonDiffXml><X \/><\/RibbonDiffXml>\n<\/Entity>/);
+    cb.writeLocalRibbonDiff(c, "account", "<RibbonDiffXml><Y /></RibbonDiffXml>");
+    const twice = fs.readFileSync(c, "utf8");
+    assert.ok(twice.includes("<RibbonDiffXml><Y /></RibbonDiffXml>") && !twice.includes("<X />"), "the second write replaces the first");
+    assert.throws(() => cb.writeLocalRibbonDiff(c, "lead", "<RibbonDiffXml />"), /no <Entity> for lead/);
+  });
+  await test("command bar publish: the exported solution gets the table's RibbonDiffXml, the import job is waited for, the table is published", async () => {
+    const pub = out("core/ribbonPublish.js");
+    const { writeZip, readZip } = out("core/zip.js");
+    const customizations = `<ImportExportXml><Entities><Entity><Name LocalizedName="Contact">Contact</Name><RibbonDiffXml><CustomActions /></RibbonDiffXml></Entity><Entity><Name LocalizedName="Account" OriginalName="Account">Account</Name><EntityInfo><entity Name="Account"><attributes><attribute PhysicalName="Name"><Name>name</Name></attribute></attributes></entity></EntityInfo><FormXml /></Entity></Entities></ImportExportXml>`;
+    const zip = writeZip([{ name: "solution.xml", data: Buffer.from("<x />") }, { name: "customizations.xml", data: Buffer.from("\uFEFF" + customizations) }]);
+    const patched = readZip(pub.patchSolutionZip(zip, "Sol", "account", "<RibbonDiffXml><HideCustomActions /></RibbonDiffXml>"));
+    const text = patched.find((e) => e.name === "customizations.xml").data.toString("utf8");
+    assert.match(text, /^\uFEFF<ImportExportXml>/, "the byte order mark stays");
+    assert.match(text, /Account<\/Name><EntityInfo>[\s\S]*<FormXml \/><RibbonDiffXml><HideCustomActions \/><\/RibbonDiffXml>\n<\/Entity>/);
+    assert.match(text, /Contact<\/Name><RibbonDiffXml><CustomActions \/>/, "the other table's diff is untouched");
+    assert.strictEqual(patched.find((e) => e.name === "solution.xml").data.toString(), "<x />");
+    assert.throws(() => pub.patchSolutionZip(zip, "Sol", "lead", "<RibbonDiffXml />"), /Solution Sol doesn't contain the lead table/);
+    assert.match(rm.replaceEntityRibbonDiff(customizations, "contact", "<RibbonDiffXml><X /></RibbonDiffXml>"), /Contact<\/Name><RibbonDiffXml><X \/><\/RibbonDiffXml><\/Entity>/, "an existing diff is replaced in place");
+    const dvm = out("core/dataverse.js");
+    const sleepWas = dvm.timing.sleep;
+    dvm.timing.sleep = async () => {};
+    try {
+      const calls = [];
+      let polls = 0;
+      const dv = {
+        actionJson: async (name, body) => { calls.push([name, Object.keys(body)]); return name === "ExportSolution" ? { ExportSolutionFile: zip.toString("base64") } : { AsyncOperationId: "op1", ImportJobKey: "k" }; },
+        getJson: async () => { polls++; return polls < 3 ? { statecode: 2, statuscode: 20 } : { statecode: 3, statuscode: 30 }; },
+        action: async (name, body) => calls.push([name, body.ParameterXml]),
+      };
+      const lines = [];
+      await pub.publishRibbonDiff(dv, "Sol", "account", "<RibbonDiffXml />", (l) => lines.push(l));
+      assert.deepStrictEqual(calls, [
+        ["ExportSolution", ["SolutionName", "Managed"]],
+        ["ImportSolutionAsync", ["CustomizationFile", "OverwriteUnmanagedCustomizations", "PublishWorkflows", "ImportJobId"]],
+        ["PublishXml", "<importexportxml><entities><entity>account</entity></entities></importexportxml>"],
+      ]);
+      assert.strictEqual(polls, 3);
+      assert.deepStrictEqual(lines.filter((l) => !/^Import running/.test(l)), ["Exporting Sol", "Importing Sol with the new command bar", "Publishing account"]);
+      await assert.rejects(pub.importSolutionZip({ ...dv, getJson: async () => ({ statecode: 3, statuscode: 31, message: "The ribbon is broken." }) }, zip), /import failed\. The ribbon is broken\./);
+    } finally {
+      dvm.timing.sleep = sleepWas;
+    }
+  });
+  await test("modern commands: rows map to commands and back, only changed rows are written, the apps touched are published", async () => {
+    const mc = out("core/modernCommands.js");
+    const row = {
+      appactionid: "a1", name: "Approve", uniquename: "acme_account_Approve", buttonlabeltext: "Approve", buttontooltiptitle: null, buttontooltipdescription: null, location: 0, type: 0, sequence: 20, hidden: false, isdisabled: false, grouptitle: null, fonticon: "Approve",
+      onclickeventtype: 2, onclickeventjavascriptfunctionname: "Acme.Account.approve", onclickeventjavascriptparameters: "PrimaryControl", onclickeventformulafunctionname: null, onclickeventformulacomponentname: null, onclickeventformulacomponentlibrary: null,
+      visibilitytype: 0, visibilityformulafunctionname: null, visibilityformulacomponentname: null, visibilityformulacomponentlibrary: null,
+      _appmoduleid_value: "app1", _parentappactionid_value: null, _iconwebresourceid_value: null, _onclickeventjavascriptwebresourceid_value: "w1",
+      appmoduleid: { appmoduleid: "app1", name: "Sales Hub", uniquename: "acme_SalesHub" }, iconwebresourceid: null, onclickeventjavascriptwebresourceid: { webresourceid: "w1", name: "acme_/account/ribbon.js" },
+    };
+    const cmd = mc.rowToCommand(row);
+    assert.deepStrictEqual([cmd.id, cmd.label, cmd.app.name, cmd.onClick.type, cmd.onClick.functionName, cmd.onClick.library, cmd.onClick.libraryId, cmd.icon.fontIcon, cmd.hidden], ["a1", "Approve", "Sales Hub", 2, "Acme.Account.approve", "acme_/account/ribbon.js", "w1", "Approve", false]);
+    const body = mc.commandBody(cmd, "account");
+    assert.deepStrictEqual([body.uniquename, body.context, body.contextvalue, body.location, body.onclickeventtype, body.onclickeventjavascriptfunctionname, body.onclickeventformulafunctionname, body.fonticon], ["acme_account_Approve", 1, "account", 0, 2, "Acme.Account.approve", null, "Approve"]);
+    const before = [cmd, mc.rowToCommand({ ...row, appactionid: "a2", uniquename: "acme_x", buttonlabeltext: "X" })];
+    const after = clone(before);
+    after[0].label = "Approve now";
+    after[1].removed = true;
+    after.push({ uniqueName: "acme_account_New", name: "New", label: "New", location: 1, type: 0, sequence: 30, app: { id: "app2", name: "Service" }, hidden: false, disabled: false, onClick: { type: 2, functionName: "Acme.go", library: "acme_/go.js" }, visibility: { type: 0 }, icon: { webResource: "acme_/icons/go.svg" }, fresh: true });
+    const ch = mc.modernChanges(before, after);
+    assert.deepStrictEqual([ch.create.map((c) => c.uniqueName), ch.update.map((c) => c.uniqueName), ch.remove.map((c) => c.uniqueName)], [["acme_account_New"], ["acme_account_Approve"], ["acme_x"]]);
+    const calls = [];
+    const dv = {
+      remove: async (p) => calls.push(["DELETE", p]),
+      create: async (set, body, headers) => { calls.push(["POST", set, body, headers]); return "new1"; },
+      update: async (p, body) => calls.push(["PATCH", p, body]),
+      getAll: async (p) => (p.startsWith("entities?") ? [{ entityid: "e1" }] : []),
+      action: async (name, body) => calls.push([name, body.ParameterXml]),
+    };
+    const ids = await mc.saveModernCommands(dv, ch, { table: "account", solution: "AcmeCore", webResourceId: async (n) => ({ "acme_/account/ribbon.js": "w1", "acme_/go.js": "w2", "acme_/icons/go.svg": "w3" })[n] });
+    assert.deepStrictEqual(ids, { acme_account_New: "new1" });
+    assert.deepStrictEqual(calls[0], ["DELETE", "appactions(a2)"]);
+    const post = calls.find((c) => c[0] === "POST");
+    assert.deepStrictEqual([post[1], post[2]["appmoduleid@odata.bind"], post[2]["onclickeventjavascriptwebresourceid@odata.bind"], post[2]["iconwebresourceid@odata.bind"], post[2]["contextentity@odata.bind"], post[2].contextvalue, post[3]], ["appactions", "/appmodules(app2)", "/webresourceset(w2)", "/webresourceset(w3)", "/entities(e1)", "account", { "MSCRM.SolutionUniqueName": "AcmeCore" }]);
+    const patch = calls.find((c) => c[0] === "PATCH");
+    assert.deepStrictEqual([patch[1], patch[2].buttonlabeltext, patch[2]["onclickeventjavascriptwebresourceid@odata.bind"], "contextentity@odata.bind" in patch[2]], ["appactions(a1)", "Approve now", "/webresourceset(w1)", false]);
+    assert.deepStrictEqual(calls[calls.length - 1], ["PublishXml", "<importexportxml><appmodules><appmodule>{app1}</appmodule><appmodule>{app2}</appmodule></appmodules></importexportxml>"]);
+    await assert.rejects(mc.saveModernCommands(dv, { create: [after[2]], update: [], remove: [] }, { table: "account", webResourceId: async () => undefined }), /The library acme_\/go\.js isn't a web resource in the environment/);
+    // Clearing a lookup removes the reference, since a PATCH can't null it.
+    const cleared = clone(cmd);
+    cleared.onClick.library = "";
+    const calls2 = [];
+    await mc.saveModernCommands({ ...dv, update: async (p, body) => calls2.push(["PATCH", p]), remove: async (p) => calls2.push(["DELETE", p]), action: async () => calls2.push(["PublishXml"]) }, { create: [], update: [cleared], remove: [] }, { table: "account", webResourceId: async () => undefined });
+    assert.deepStrictEqual(calls2, [["PATCH", "appactions(a1)"], ["DELETE", "appactions(a1)/onclickeventjavascriptwebresourceid/$ref"], ["PublishXml"]]);
+    assert.deepStrictEqual(await mc.fetchModernCommands({ getAll: async () => { throw new Error("Resource not found for the segment 'appactions'."); } }, "account"), [], "an environment without the table has no modern commands");
+  });
   // ---------- forms and metadata ----------
   const md = out("core/metadata.js");
   const formXml = `<form><tabs><tab name="T1" visible="false"><labels><label description="Onglet" languagecode="1036" /><label description="Tab &amp; One" languagecode="1033" /></labels><columns><column><sections>
@@ -385,6 +839,14 @@ const tmp = () => {
     assert.match(c, /var link2 = link1\.AddLink\("systemuser", "ownerid", "systemuserid", JoinOperator\.Inner\);/);
     assert.match(c, /query\.Criteria\.AddCondition\("u", "fullname", ConditionOperator\.Equal, "x"\);/);
     assert.match(c, /link1\.Orders\.Add\(new OrderExpression\("fullname", OrderType\.Descending\)\);/);
+  });
+  await test("codegen: subqueries become AnyAllFilterLinkEntity links, nested, joined and on a joined table", () => {
+    const c = gen("csQuery", "SELECT a.name FROM account a JOIN contact c ON c.contactid = a.primarycontactid WHERE a.statecode = 0 AND NOT EXISTS (SELECT 1 FROM task t WHERE t.regardingobjectid = c.contactid) AND (a.name = 'x' OR a.accountid IN (SELECT o.parentcustomerid FROM contact o JOIN systemuser u ON u.systemuserid = o.ownerid WHERE u.isdisabled = 0 AND o.statecode = 0))").code;
+    assert.match(c, /var sub1 = new LinkEntity\("contact", "task", "contactid", "regardingobjectid", JoinOperator\.NotAny\);\nvar filter1 = new FilterExpression\(LogicalOperator\.And\) \{ AnyAllFilterLinkEntity = sub1 \};\nlink1\.LinkCriteria\.AddFilter\(filter1\);/);
+    assert.match(c, /var sub2 = new LinkEntity\("account", "contact", "accountid", "parentcustomerid", JoinOperator\.Any\);\nvar sub2Link1 = sub2\.AddLink\("systemuser", "ownerid", "systemuserid", JoinOperator\.Inner\);\nsub2Link1\.EntityAlias = "u";\nsub2Link1\.LinkCriteria\.AddCondition\("isdisabled", ConditionOperator\.Equal, 0\);\nsub2\.LinkCriteria\.AddCondition\("statecode", ConditionOperator\.Equal, 0\);/);
+    assert.match(c, /filter3\.AddFilter\(filter4\);/);
+    assert.match(gen("csQuery", "SELECT name FROM account WHERE (statecode = 0 OR statecode = 1) AND (name = 'a' OR name = 'b')").code, /var filter1 = [\s\S]*var filter2 = [\s\S]*var filter3 = /);
+    assert.throws(() => gen("csQuery", "SELECT name FROM account WHERE EXISTS (SELECT 1 FROM contact WHERE statecode = 0)"), /needs a condition linking it to account/);
   });
   await test("codegen: NOT becomes its opposite; quotes are escaped for each language", () => {
     assert.match(gen("csQuery", "SELECT name FROM account WHERE NOT (name = 'a' AND statecode IN (0, 1))").code, /LogicalOperator\.Or[\s\S]*NotEqual, "a"[\s\S]*NotIn, 0, 1/);
@@ -788,9 +1250,22 @@ const tmp = () => {
       assert.deepStrictEqual(waits, [7000, 10000], "Retry-After, then a growing default");
 
       waits.length = 0;
-      script = [reply(429, {}, { "Retry-After": "600" }), reply(429), reply(429), reply(429, { error: { message: "Busy" } })];
-      await assert.rejects(client.getJson("x"), /throttling requests \(429\)[\s\S]*Busy/);
-      assert.deepStrictEqual(waits, [60000, 10000, 15000], "waits are capped");
+      script = [reply(429, {}, { "Retry-After": "1" }), reply(429), reply(429), reply(429, { error: { message: "Busy" } })];
+      await assert.rejects(client.getJson("x"), /throttling requests \(429\) and kept throttling after three waits[\s\S]*Busy/);
+      assert.deepStrictEqual(waits, [1000, 10000, 15000], "three waits, then it gives up");
+
+      // A wait longer than the cap isn't cut short and retried early (that only earns more 429s): it fails at once,
+      // and the whole wait is recorded so batches starting meanwhile hold off.
+      waits.length = 0;
+      script = [reply(429, { error: { message: "Busy" } }, { "Retry-After": "600" })];
+      const before = Date.now();
+      await assert.rejects(client.getJson("x"), /asked to wait 10 minutes[\s\S]*Busy/);
+      assert.deepStrictEqual(waits, []);
+      assert.ok(client.throttledUntil >= before + 600_000, "throttledUntil covers the whole Retry-After");
+      waits.length = 0;
+      script = [reply(429, {}, { "Retry-After": new Date(Date.now() + 4000).toUTCString() }), reply(200, { ok: 2 })];
+      assert.deepStrictEqual(await client.getJson("x"), { ok: 2 });
+      assert.ok(waits.length === 1 && waits[0] > 2000 && waits[0] <= 4000, `an HTTP-date Retry-After is honoured: ${waits}`);
 
       global.fetch = async () => { const e = new TypeError("fetch failed"); e.cause = { code: "ENOTFOUND" }; throw e; };
       await assert.rejects(client.getJson("x"), /Couldn't reach a\.crm\.dynamics\.com \(ENOTFOUND\)\. Check the org URL/);
@@ -828,13 +1303,13 @@ const tmp = () => {
     client.config.account = "missing@a.com";
     await assert.rejects(auth.getToken(client, { silent: true }), /Not signed in as missing@a\.com yet/, "silent never prompts");
     S.newSignInAccount = "someone@else.com";
-    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but .*config\.json says to use missing@a\.com/);
+    await assert.rejects(auth.getToken(client), /Signed in as someone@else\.com, but .*'s tenant configuration says to use missing@a\.com/);
     delete S.newSignInAccount;
 
     const dataverse = auth.dataverseFor(client);
     assert.strictEqual(dataverse.orgUrl, "https://a.crm.dynamics.com");
     fs.writeFileSync(path.join(dir, ".lantern/config.json"), JSON.stringify({}));
-    assert.throws(() => auth.dataverseFor(clients.readClient(dir)), /Set "org" in .*config\.json first/);
+    assert.throws(() => auth.dataverseFor(clients.readClient(dir)), /Set "org" in the .* tenant configuration first/);
     auth.clearTokenCache();
   });
 
@@ -971,7 +1446,9 @@ const tmp = () => {
       if (!fs.existsSync(path.join(root, f))) problems.push(`missing file ${f}`);
     }
     // Custom context keys in when-clauses must be set by the code somewhere.
-    const source = fs.readdirSync(path.join(root, "src"), { recursive: true }).filter((f) => f.endsWith(".ts")).map((f) => fs.readFileSync(path.join(root, "src", f), "utf8")).join("\n");
+    // A plain walk: readdirSync({ recursive: true }) silently returns only the top level before Node 20.
+    const tsFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? tsFiles(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []));
+    const source = tsFiles(path.join(root, "src")).map((f) => fs.readFileSync(f, "utf8")).join("\n");
     const keys = new Set([...JSON.stringify(c.menus).matchAll(/\b(lantern\.(?:active\w+|reviewActive))\b/g)].map((m) => m[1]));
     for (const k of keys) if (!source.includes(`"setContext", "${k}"`)) problems.push(`context key never set: ${k}`);
     // The walkthrough's pages exist and its links run real commands.
@@ -983,9 +1460,15 @@ const tmp = () => {
       }
     }
     // Every declared Copilot tool is registered by the code, and the other way round.
+    // Copilot reads the declarations; MCP clients get the code's: they must say the same thing.
+    const tools = out("ui/lanternTools.js").lanternTools(() => ({}));
     const declared = (c.languageModelTools ?? []).map((t) => t.name).sort();
-    const registered = [...source.matchAll(/registerTool\(\s*"([\w]+)"/g)].map((m) => m[1]).sort();
+    const registered = tools.map((t) => t.name).sort();
     if (JSON.stringify(declared) !== JSON.stringify(registered)) problems.push(`Copilot tools declared ${declared} but registered ${registered}`);
+    for (const t of tools) {
+      const d = (c.languageModelTools ?? []).find((x) => x.name === t.name);
+      if (d && (d.modelDescription !== t.description || JSON.stringify(d.inputSchema) !== JSON.stringify(t.inputSchema))) problems.push(`${t.name}: package.json and lanternTools.ts disagree`);
+    }
     assert.deepStrictEqual(problems, []);
   });
 
@@ -1129,6 +1612,15 @@ const tmp = () => {
   });
 
   const reg = out("core/pluginRegistration.js");
+  await test("plug-in packages: the unique name gets the publisher prefix, and both spellings find the package", () => {
+    assert.strictEqual(reg.packageUniqueName("OHCP.CRM.Plugins.Approval", "ohcp"), "ohcp_OHCP.CRM.Plugins.Approval");
+    assert.strictEqual(reg.packageUniqueName("acme_Pkg", "acme"), "acme_Pkg", "already prefixed");
+    assert.ok(reg.isPackageFor({ uniquename: "ohcp_OHCP.CRM.Plugins.Approval", name: "Approvals" }, "OHCP.CRM.Plugins.Approval"));
+    assert.ok(reg.isPackageFor({ uniquename: "acme_Pkg", name: null }, "ACME_PKG"));
+    assert.ok(reg.isPackageFor({ uniquename: "x_Renamed", name: "Pkg" }, "Pkg"), "the Plugin Registration Tool names it by the package ID");
+    assert.ok(!reg.isPackageFor({ uniquename: "acme_Other_Pkg", name: "Other_Pkg" }, "Pkg"), "a different package that ends the same way");
+  });
+
   await test("plug-in update plan: what Dataverse would refuse is caught before sending anything", () => {
     const meta = (o = {}) => ({ name: "Acme", version: "1.0.0.5", culture: "neutral", publicKeyToken: "aaaa", signed: true, references: [], unresolvedBases: [],
       pluginClasses: [{ typeName: "Acme.A", kind: "plugin" }, { typeName: "Acme.W", kind: "workflow" }], ...o });
@@ -1212,6 +1704,381 @@ const tmp = () => {
     w(a, "Acme/Changed.cs", "1"); w(b, "Acme/Changed.cs", "2");
     w(a, "Acme/Gone.cs", "g"); w(b, "Acme/New.cs", "n");
     assert.deepStrictEqual(dc.compareTrees(a, b).map((d) => `${d.file.split(path.sep).join("/")}:${d.status}`), ["Acme/Changed.cs:changed", "Acme/Gone.cs:onlyDeployed", "Acme/New.cs:onlyLocal"]);
+  });
+
+  // ---------- batched writes ----------
+  await test("batch: the request body is CRLF parts, and responses parse per item (errors, headers, change sets)", () => {
+    const body = dvMod.buildBatchBody(
+      [{ method: "DELETE", path: "accounts(a1)" }, { method: "PATCH", path: "accounts(a2)", body: { fax: "1" }, headers: { "If-Match": "*" } }],
+      "batch_x",
+      "https://a.crm.dynamics.com/api/data/v9.2/"
+    );
+    assert.strictEqual(
+      body,
+      [
+        "--batch_x", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "",
+        "DELETE https://a.crm.dynamics.com/api/data/v9.2/accounts(a1) HTTP/1.1", "",
+        "--batch_x", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "",
+        "PATCH https://a.crm.dynamics.com/api/data/v9.2/accounts(a2) HTTP/1.1", "If-Match: *", "Content-Type: application/json; type=entry", "", '{"fax":"1"}',
+        "--batch_x--", "",
+      ].join("\r\n")
+    );
+    assert.ok(!/[^\r]\n/.test(body), "only CRLF line endings");
+    const response = [
+      "--batchresponse_1", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "",
+      "HTTP/1.1 204 No Content", "OData-Version: 4.0", "OData-EntityId: https://a.crm.dynamics.com/api/data/v9.2/accounts(11111111-1111-1111-1111-111111111111)", "", "",
+      "--batchresponse_1", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "",
+      "HTTP/1.1 404 Not Found", "Content-Type: application/json; odata.metadata=minimal", "OData-Version: 4.0", "",
+      '{"error":{"code":"0x80040217","message":"account With Id = a2 Does Not Exist"}}',
+      "--batchresponse_1", "Content-Type: multipart/mixed; boundary=changesetresponse_2", "",
+      "--changesetresponse_2", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "Content-ID: 1", "",
+      "HTTP/1.1 204 No Content", "OData-Version: 4.0", "", "",
+      "--changesetresponse_2--",
+      "--batchresponse_1", "Content-Type: application/http", "Content-Transfer-Encoding: binary", "",
+      "HTTP/1.1 500 Internal Server Error", "", "not json",
+      "--batchresponse_1--", "",
+    ].join("\r\n");
+    const parsed = dvMod.parseBatchResponse(response, "multipart/mixed; boundary=batchresponse_1");
+    assert.deepStrictEqual(parsed.map((p) => [p.status, p.ok, p.error]), [[204, true, undefined], [404, false, "account With Id = a2 Does Not Exist"], [204, true, undefined], [500, false, "HTTP 500 Internal Server Error"]]);
+    assert.strictEqual(parsed[0].headers["odata-entityid"], "https://a.crm.dynamics.com/api/data/v9.2/accounts(11111111-1111-1111-1111-111111111111)");
+    assert.deepStrictEqual(dvMod.parseBatchResponse(response.replace(/\r\n/g, "\n"), null).map((p) => p.status), [204, 404, 204, 500], "boundary read from the body, LF tolerated");
+    assert.throws(() => dvMod.parseBatchResponse('{"error":{}}', "application/json"), /isn't a batch response/);
+  });
+  await test("batch: DataverseClient.batch posts $batch with continue-on-error, pads a short answer, and waits out throttling", async () => {
+    const realFetch = global.fetch;
+    const realSleep = dvMod.timing.sleep;
+    const waits = [];
+    dvMod.timing.sleep = async (ms) => void waits.push(ms);
+    const calls = [];
+    const answer = (parts, status = 200) => ({
+      ok: status < 300,
+      status,
+      headers: { get: (h) => (h === "Content-Type" ? 'multipart/mixed; boundary="batchresponse_9"' : h === "Retry-After" ? "3" : null) },
+      json: async () => ({}),
+      text: async () => parts.map((p) => `--batchresponse_9\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n\r\n${p}\r\n`).join("") + "--batchresponse_9--\r\n",
+    });
+    try {
+      let script = [answer(["HTTP/1.1 204 No Content\r\nOData-Version: 4.0\r\n", 'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{"error":{"message":"Nope"}}'])];
+      global.fetch = async (url, init) => { calls.push({ url, init }); return script.shift(); };
+      const client = new dvMod.DataverseClient("https://a.crm.dynamics.com", async () => "t");
+      const results = await client.batch([{ method: "DELETE", path: "accounts(a1)" }, { method: "DELETE", path: "accounts(a2)" }, { method: "DELETE", path: "accounts(a3)" }]);
+      assert.strictEqual(calls[0].url, "https://a.crm.dynamics.com/api/data/v9.2/$batch");
+      assert.strictEqual(calls[0].init.method, "POST");
+      assert.strictEqual(calls[0].init.headers.Prefer, "odata.continue-on-error");
+      assert.strictEqual(calls[0].init.headers.Authorization, "Bearer t");
+      const boundary = /^multipart\/mixed; boundary="(batch_[^"]+)"$/.exec(calls[0].init.headers["Content-Type"])[1];
+      assert.ok(calls[0].init.body.startsWith(`--${boundary}\r\n`) && calls[0].init.body.endsWith(`--${boundary}--\r\n`), "the body uses the boundary from the header");
+      assert.strictEqual((calls[0].init.body.match(/DELETE https:\/\/a\.crm\.dynamics\.com\/api\/data\/v9\.2\/accounts\(a\d\) HTTP\/1\.1/g) || []).length, 3);
+      assert.deepStrictEqual(results.map((r) => [r.ok, r.error]), [[true, undefined], [false, "Nope"], [false, "Not attempted: an earlier request in the batch failed"]]);
+
+      script = [answer([], 429), answer(["HTTP/1.1 204 No Content\r\n"])];
+      assert.deepStrictEqual((await client.batch([{ method: "DELETE", path: "accounts(a1)" }])).map((r) => r.ok), [true]);
+      assert.deepStrictEqual(waits, [3000], "Retry-After is honoured for a throttled batch");
+      await assert.rejects(client.batch(Array.from({ length: 1001 }, () => ({ method: "DELETE", path: "x" }))), /1000 requests at most/);
+      assert.deepStrictEqual(await client.batch([]), []);
+    } finally {
+      global.fetch = realFetch;
+      dvMod.timing.sleep = realSleep;
+    }
+  });
+  const writeTable = { logicalName: "account", entitySetName: "accounts", primaryId: "accountid", primaryName: "name" };
+  const okAnswer = () => ({ status: 204, ok: true, headers: {}, body: "" });
+  await test("write: rows go out in batches of the configured size, several in flight, and each row keeps its own result", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 100, startBatchSize: 100, concurrency: 3 });
+    try {
+      assert.deepStrictEqual(write.chunkRows([1, 1, 1], 1000), [[0, 1, 2]]);
+      assert.deepStrictEqual(write.chunkRows([2, 2, 2], 3), [[0], [1], [2]]);
+      assert.deepStrictEqual(write.chunkRows([1, 3, 1, 1], 4), [[0, 1], [2, 3]]);
+      const batches = [];
+      let inFlight = 0;
+      let peak = 0;
+      const dv = {
+        batch: async (items) => {
+          batches.push(items);
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 5));
+          inFlight--;
+          return items.map((item) => (item.path === "accounts(id-5)" ? { status: 404, ok: false, headers: {}, body: "", error: "Does Not Exist" } : okAnswer()));
+        },
+      };
+      const rows = Array.from({ length: 250 }, (_, i) => ({ id: `id-${i}`, name: `row ${i}` }));
+      const plan = { kind: "delete", table: writeTable, rows, summary: "", hasWhere: true, source: "DELETE FROM account" };
+      const progress = [];
+      const set = await write.applyWrite(plan, { dv }, (done) => progress.push(done));
+      assert.deepStrictEqual(batches.map((b) => b.length), [100, 100, 50], "chunked at the batch size");
+      assert.deepStrictEqual(batches[0].slice(0, 2), [{ method: "DELETE", path: "accounts(id-0)" }, { method: "DELETE", path: "accounts(id-1)" }]);
+      assert.strictEqual(peak, 3, "all three batches in flight together");
+      assert.deepStrictEqual(set.columns, ["name", "Result"]);
+      assert.strictEqual(set.kind, "write");
+      assert.strictEqual(set.rows.length, 250);
+      assert.deepStrictEqual(set.rows[5], [{ raw: "row 5" }, { raw: "Failed: Does Not Exist" }]);
+      assert.strictEqual(set.rows.filter((r) => r[1].raw === "Deleted").length, 249);
+      assert.ok(set.rowIds.every((id) => id === undefined));
+      assert.deepStrictEqual(progress.sort((a, b) => a - b).slice(-1), [250], "progress reaches the row count");
+      assert.strictEqual(progress.length, 3, "one report per batch");
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: UPDATE keeps a row's PATCH and lookup clears in one batch (404 on a clear is fine); INSERT reads the new IDs; a failed batch fails only its rows", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 4, concurrency: 1 });
+    try {
+      const rows = [{ id: "a1", name: "One" }, { id: "a2", name: "Two" }, { id: "a3", name: "Three" }];
+      const batches = [];
+      const dv = {
+        batch: async (items) => {
+          batches.push(items.map((i) => `${i.method} ${i.path}${i.headers ? ` ${JSON.stringify(i.headers)}` : ""}`));
+          return items.map((item) =>
+            item.path.endsWith("/$ref") ? { status: 404, ok: false, headers: {}, body: "", error: "no link" } : item.path === "accounts(a3)" ? { status: 412, ok: false, headers: {}, body: "", error: "Precondition Failed" } : okAnswer()
+          );
+        },
+      };
+      const update = { kind: "update", table: writeTable, rows, prepared: { body: { fax: "1" }, clears: ["parentaccountid"], summary: [] }, summary: "", hasWhere: true, source: "" };
+      const set = await write.applyWrite(update, { dv }, () => undefined);
+      assert.deepStrictEqual(batches, [
+        ['PATCH accounts(a1) {"If-Match":"*"}', "DELETE accounts(a1)/parentaccountid/$ref", 'PATCH accounts(a2) {"If-Match":"*"}', "DELETE accounts(a2)/parentaccountid/$ref"],
+        ['PATCH accounts(a3) {"If-Match":"*"}', "DELETE accounts(a3)/parentaccountid/$ref"],
+      ], "two requests per row, and a row is never split across batches");
+      assert.deepStrictEqual(set.rows.map((r) => r[1].raw), ["Updated", "Updated", "Failed: Precondition Failed"]);
+      assert.deepStrictEqual(set.rowIds, ["a1", "a2", "a3"]);
+
+      let calls = 0;
+      const dv2 = {
+        batch: async (items) => {
+          if (calls++ === 0) throw new Error("Couldn't reach a.crm.dynamics.com");
+          return items.map((_, i) => ({ status: 204, ok: true, headers: { "odata-entityid": `https://a/api/data/v9.2/accounts(0000000${i}-0000-0000-0000-000000000000)` }, body: "" }));
+        },
+      };
+      const insert = {
+        kind: "insert",
+        table: writeTable,
+        rows: Array.from({ length: 5 }, (_, i) => ({ id: "", name: `N${i + 1}` })),
+        inserts: Array.from({ length: 5 }, (_, i) => ({ body: { name: `N${i + 1}` }, clears: [], summary: [] })),
+        summary: "", hasWhere: true, source: "",
+      };
+      const made = await write.applyWrite(insert, { dv: dv2 }, () => undefined);
+      assert.deepStrictEqual(made.rows.map((r) => r[1].raw), [...Array(4).fill("Failed: Couldn't reach a.crm.dynamics.com"), "Created"]);
+      assert.deepStrictEqual(made.rowIds, [undefined, undefined, undefined, undefined, "00000000-0000-0000-0000-000000000000"]);
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: batches shrink when rows are slow and grow back when they're quick, between the min and max sizes", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 100, startBatchSize: 100, minBatchSize: 10, batchMs: 60, concurrency: 1, maxConcurrency: 1 });
+    try {
+      const sizes = [];
+      let perRow = 3; // ms of "server work" per row
+      const dv = {
+        batch: async (items) => {
+          sizes.push(items.length);
+          await new Promise((r) => setTimeout(r, items.length * perRow));
+          if (sizes.length === 6) perRow = 0; // rows become instant
+          return items.map(okAnswer);
+        },
+      };
+      const rows = Array.from({ length: 600 }, (_, i) => ({ verb: "Deleted", items: [{ method: "DELETE", path: `accounts(id-${i})` }] }));
+      await write.sendRows(rows, dv, () => undefined);
+      assert.strictEqual(sizes[0], 100, "starts at the start size");
+      assert.ok(sizes.slice(1, 6).every((s) => s >= 10 && s <= 40), `slow rows (3 ms each, 60 ms per batch) shrink the batches toward 20: ${sizes.slice(1, 6)}`);
+      assert.strictEqual(sizes[sizes.length - 1] <= 100, true);
+      assert.ok(sizes.slice(-3).some((s) => s > 40), `quick rows grow the batches back: ${sizes.slice(-6)}`);
+      assert.strictEqual(sizes.reduce((a, b) => a + b, 0), 600, "every row sent once");
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: lanes stop growing, and come back, when more of them only make each row slower", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 1, startBatchSize: 1, concurrency: 2, minConcurrency: 2, maxConcurrency: 32, tickMs: 40 });
+    try {
+      // A server that handles 8 rows at a time well: each row takes 10 ms up to 8 lanes, then the time per row grows with the lanes.
+      let inFlight = 0;
+      const widths = [];
+      const dv = {
+        recommendedParallelism: 32,
+        batch: async (items) => {
+          inFlight++;
+          widths.push(inFlight);
+          const ms = 10 * Math.max(1, inFlight / 8);
+          await new Promise((r) => setTimeout(r, ms));
+          inFlight--;
+          return items.map(okAnswer);
+        },
+      };
+      const lines = [];
+      const rows = Array.from({ length: 800 }, (_, i) => ({ verb: "Deleted", items: [{ method: "DELETE", path: `accounts(id-${i})` }] }));
+      const outcomes = await write.sendRows(rows, dv, () => undefined, undefined, (line) => lines.push(line));
+      assert.ok(outcomes.every((o) => o.result === "Deleted"));
+      const peak = Math.max(...widths);
+      assert.ok(peak >= 8 && peak < 32, `grows to where rows slow down, not to the hint: peak ${peak}`);
+      const late = widths.slice(-200);
+      const lateAvg = late.reduce((a, b) => a + b, 0) / late.length;
+      assert.ok(lateAvg >= 5 && lateAvg <= 20, `settles near the knee: late average ${lateAvg.toFixed(1)} lanes`);
+      assert.ok(lines.some((l) => /batches at a time/.test(l)), "logs the tuning steps");
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: a plan's OPTION (BYPASS ...) hints go out as headers on every request of every row", async () => {
+    const sent = [];
+    const dv = { batch: async (items) => { sent.push(...items.map((i) => `${i.method} ${i.path} ${JSON.stringify(i.headers)}`)); return items.map(okAnswer); } };
+    const plan = { kind: "update", table: writeTable, hints: ["bypass sync plugins", "bypass flows"], rows: [{ id: "a1", name: "One" }], prepared: { body: { fax: "1" }, clears: ["parentaccountid"], files: ["doc"], summary: [] }, summary: "", hasWhere: true, source: "" };
+    await write.applyWrite(plan, { dv }, () => undefined);
+    const h = '{"MSCRM.BypassBusinessLogicExecution":"CustomSync","MSCRM.SuppressCallbackRegistrationExpanderJob":"true"}';
+    assert.deepStrictEqual(sent, [
+      `PATCH accounts(a1) {"If-Match":"*","MSCRM.BypassBusinessLogicExecution":"CustomSync","MSCRM.SuppressCallbackRegistrationExpanderJob":"true"}`,
+      `DELETE accounts(a1)/parentaccountid/$ref ${h}`,
+      `DELETE accounts(a1)/doc ${h}`,
+    ]);
+    sent.length = 0;
+    await write.applyWrite({ kind: "delete", table: writeTable, hints: ["bypass plugins"], rows: [{ id: "a1", name: "One" }], summary: "", hasWhere: true, source: "" }, { dv }, () => undefined);
+    assert.deepStrictEqual(sent, ['DELETE accounts(a1) {"MSCRM.BypassBusinessLogicExecution":"CustomSync,CustomAsync"}']);
+    assert.deepStrictEqual(write.hintHeaders(["bypass plugins", "bypass flows"]), { "MSCRM.BypassBusinessLogicExecution": "CustomSync,CustomAsync", "MSCRM.SuppressCallbackRegistrationExpanderJob": "true" });
+    assert.deepStrictEqual(write.hintHeaders(["bypass sync plugins"]), { "MSCRM.BypassBusinessLogicExecution": "CustomSync" });
+    assert.deepStrictEqual(write.hintHeaders(["bypass async plugins", "bypass sync plugins"]), { "MSCRM.BypassBusinessLogicExecution": "CustomSync,CustomAsync" });
+    assert.deepStrictEqual(write.hintHeaders(), {});
+    assert.match(write.hintText(["bypass plugins", "bypass flows"]), /^Custom plug-ins and workflows won't run \(BYPASS PLUGINS; .*\)\. Power Automate flows won't be triggered \(BYPASS FLOWS\)\.$/);
+  });
+  await test("write: after a 429 no batch starts until Retry-After ends, the batches in flight halve, then grow back one per batch", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 1, concurrency: 8, minConcurrency: 2, maxConcurrency: 8, tickMs: 1 });
+    try {
+      let inFlight = 0;
+      const peaks = []; // in-flight count when each batch started
+      let calls = 0;
+      let heldUntil = 0;
+      let startedDuringHold = 0;
+      const dv = {
+        throttledUntil: 0,
+        batch: async (items) => {
+          calls++;
+          inFlight++;
+          peaks.push(inFlight);
+          if (Date.now() < heldUntil) startedDuringHold++;
+          if (calls === 8) {
+            // the 8th batch is throttled: the client would sleep Retry-After inside request(); here it just notes it
+            heldUntil = Date.now() + 60;
+            dv.throttledUntil = heldUntil;
+          }
+          await new Promise((r) => setTimeout(r, 10));
+          inFlight--;
+          return items.map(okAnswer);
+        },
+      };
+      const lines = [];
+      const rows = Array.from({ length: 30 }, (_, i) => ({ verb: "Deleted", items: [{ method: "DELETE", path: `accounts(id-${i})` }] }));
+      const outcomes = await write.sendRows(rows, dv, () => undefined, undefined, (line) => lines.push(line));
+      assert.ok(outcomes.every((o) => o.result === "Deleted"));
+      assert.strictEqual(startedDuringHold, 0, "nothing new starts before Retry-After ends");
+      assert.strictEqual(Math.max(...peaks.slice(0, 8)), 8, "full width before the 429");
+      const after = peaks.slice(8);
+      assert.ok(after[0] <= 4, `halved after the 429, got ${after[0]}`);
+      assert.ok(Math.max(...after) > 4 && Math.max(...after) <= 8, `grows back afterwards, got ${Math.max(...after)}`);
+      assert.ok(lines.some((l) => /Dataverse asked for a pause \(429\): waiting \d+ s, then 4 batches at a time/.test(l)), lines.join("|"));
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: SET filecolumn = NULL deletes the file with a DELETE on the column (404 is fine); a file can't be set", async () => {
+    const columns = [{ logicalName: "acme_document", type: "File", displayName: "File" }, { logicalName: "fax", type: "String", displayName: "Fax" }];
+    const p = await write.prepareValues(writeTable, columns, [{ column: "acme_document", value: null }, { column: "fax", value: "1" }], {}, {});
+    assert.deepStrictEqual([p.body, p.files, p.summary[0]], [{ fax: "1" }, ["acme_document"], "acme_document = NULL (file deleted)"]);
+    await assert.rejects(() => write.prepareValues(writeTable, columns, [{ column: "acme_document", value: "x" }], {}, {}), /acme_document is a file column: SET acme_document = NULL deletes the file/);
+    const batches = [];
+    const dv = {
+      batch: async (items) => {
+        batches.push(items.map((i) => `${i.method} ${i.path}`));
+        return items.map((i) => (i.path === "accounts(a2)/acme_document" ? { status: 404, ok: false, headers: {}, body: "", error: "no file" } : okAnswer()));
+      },
+    };
+    const plan = { kind: "update", table: writeTable, rows: [{ id: "a1", name: "One" }, { id: "a2", name: "Two" }], prepared: { body: {}, clears: [], files: ["acme_document"], summary: [] }, summary: "", hasWhere: true, source: "" };
+    const set = await write.applyWrite(plan, { dv }, () => undefined);
+    assert.deepStrictEqual(batches, [["DELETE accounts(a1)/acme_document", "DELETE accounts(a2)/acme_document"]]);
+    assert.deepStrictEqual(set.rows.map((r) => r[1].raw), ["Updated", "Updated"]);
+  });
+  await test("write: sendRows mixes creates and updates per row, and reports rows that couldn't be prepared without sending them", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 10, concurrency: 1 });
+    try {
+      const sent = [];
+      const dv = {
+        batch: async (items) => {
+          sent.push(items.map((i) => `${i.method} ${i.path}`));
+          return items.map((item) => (item.method === "POST" ? { status: 204, ok: true, headers: { "odata-entityid": "https://a/api/data/v9.2/accounts(22222222-2222-2222-2222-222222222222)" }, body: "" } : okAnswer()));
+        },
+      };
+      const progress = [];
+      const outcomes = await write.sendRows(
+        [
+          { verb: "Created", items: [{ method: "POST", path: "accounts", body: { name: "A" } }] },
+          { verb: "Updated", id: "a1", items: [], failed: "fax needs a number, not 'x'" },
+          { verb: "Updated", id: "a2", items: [{ method: "PATCH", path: "accounts(a2)", body: { fax: "1" }, headers: { "If-Match": "*" } }] },
+        ],
+        dv,
+        (done) => progress.push(done)
+      );
+      assert.deepStrictEqual(sent, [["POST accounts", "PATCH accounts(a2)"]], "the row that couldn't be prepared isn't sent");
+      assert.deepStrictEqual(outcomes, [{ result: "Created", id: "22222222-2222-2222-2222-222222222222" }, { result: "Failed: fax needs a number, not 'x'", id: "a1" }, { result: "Updated", id: "a2" }]);
+      assert.deepStrictEqual(progress, [3], "progress counts the unsent row too");
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: the batches in flight grow to Dataverse's x-ms-dop-hint once a response carries it, up to the cap", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 1, concurrency: 2, minConcurrency: 2, maxConcurrency: 6, tickMs: 1 });
+    try {
+      const run = async (hint, cap) => {
+        write.limits.maxConcurrency = cap;
+        let inFlight = 0;
+        let peak = 0;
+        const dv = {
+          batch: async (items) => {
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            await new Promise((r) => setTimeout(r, 5));
+            dv.recommendedParallelism = hint; // the hint arrives with the first responses
+            inFlight--;
+            return items.map(okAnswer);
+          },
+        };
+        const lines = [];
+        const rows = Array.from({ length: 40 }, (_, i) => ({ verb: "Deleted", items: [{ method: "DELETE", path: `accounts(id-${i})` }] }));
+        const outcomes = await write.sendRows(rows, dv, () => undefined, undefined, (line) => lines.push(line));
+        assert.ok(outcomes.every((o) => o.result === "Deleted"));
+        return { peak, lines: lines.filter((l) => l.startsWith("Dataverse")), ticks: lines.filter((l) => l.startsWith("Last ")) };
+      };
+      const grown = await run(8, 6);
+      assert.strictEqual(grown.peak, 6, "grows past the starting concurrency while rows stay quick, up to the cap");
+      assert.deepStrictEqual(grown.lines, ["Dataverse allows up to 8 requests at a time for this environment: using up to 6 batches in parallel, tuned for rows per second\n"]);
+      assert.ok(grown.ticks.length > 0 && /^Last \d+ s: \d+ rows \(\d+\.\d\/s\), \d+\.\d\d s per row \(best \d+\.\d\d\), \d+( → \d+)? batches at a time, 1 rows each\n$/.test(grown.ticks[0]), grown.ticks[0]);
+      const low = await run(1, 6);
+      assert.strictEqual(low.peak, 2, "a hint below the starting concurrency doesn't shrink it");
+      assert.deepStrictEqual(low.lines, []);
+      const none = await run(undefined, 6);
+      assert.strictEqual(none.peak, 2, "no hint: the starting concurrency");
+    } finally {
+      Object.assign(write.limits, saved);
+    }
+  });
+  await test("write: cancelling skips the batches not sent yet and says so per row", async () => {
+    const saved = { ...write.limits };
+    Object.assign(write.limits, { batchSize: 2, concurrency: 1 });
+    try {
+      const token = { isCancellationRequested: false, onCancellationRequested: () => undefined };
+      let calls = 0;
+      const dv = { batch: async (items) => { calls++; token.isCancellationRequested = true; return items.map(okAnswer); } };
+      const rows = Array.from({ length: 6 }, (_, i) => ({ id: `id-${i}`, name: `row ${i}` }));
+      const set = await write.applyWrite({ kind: "delete", table: writeTable, rows, summary: "", hasWhere: true, source: "" }, { dv }, () => undefined, token);
+      assert.strictEqual(calls, 1, "nothing more is sent after cancelling");
+      assert.deepStrictEqual(set.rows.map((r) => r[1].raw), ["Deleted", "Deleted", ...Array(4).fill("Skipped (cancelled)")]);
+    } finally {
+      Object.assign(write.limits, saved);
+    }
   });
 
   console.log(`${passed} unit tests passed${failures.length ? `, ${failures.length} failed` : ""}.`);

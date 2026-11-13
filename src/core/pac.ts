@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { Client } from "./clients";
 import { UserError } from "./errors";
 import { Cancellation, run } from "./process";
@@ -38,11 +39,16 @@ function pacMissing(): UserError {
 /**
  * One pac profile per client and environment, e.g. "acmedynamicsTEST". An app registration
  * gets its own profile ("...app1a2b") so switching between it and a user never reuses the other's.
+ * pac allows 30 characters. Cutting alone gave DEV and PROD of a long client name one shared
+ * profile, so a name that doesn't fit ends in a hash of the whole name and org instead.
  */
 export function profileName(client: Client): string {
   const app = client.config.appId ? `app${client.config.appId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4)}` : "";
   const base = `${client.name}${client.envName}`.replace(/[^a-zA-Z0-9]/g, "");
-  return `${base.slice(0, 30 - app.length)}${app}` || "client";
+  const room = 30 - app.length;
+  if (base.length <= room) return `${base}${app}` || "client";
+  const hash = createHash("sha256").update(`${base}|${client.config.org.toLowerCase()}`).digest("hex").slice(0, 6);
+  return `${base.slice(0, room - hash.length)}${hash}${app}`;
 }
 
 /**
@@ -51,12 +57,14 @@ export function profileName(client: Client): string {
  * profile's account is checked against it, so pac and the Web API agree on who you are.
  */
 export async function ensureAuth(ctx: PacContext, client: Client): Promise<void> {
-  if (!client.config.org) throw new UserError(`Set "org" in ${client.name}/.lantern/config.json first.`);
+  if (!client.config.org) throw new UserError(`Set "org" in the ${client.name} tenant configuration first.`);
   const name = profileName(client);
   const wanted = client.config.account;
   ctx.log(`> pac auth select --name ${name}\n`);
   const select = await run(ctx.pacPath, ["auth", "select", "--name", name], { token: ctx.token });
   if (select.missing) throw pacMissing();
+  // A cancelled select fails like a missing profile; going on would open a sign-in window.
+  if (ctx.token?.isCancellationRequested) throw new UserError("Cancelled.");
 
   if (select.code === 0) {
     if (!wanted || client.config.appId) return;
@@ -114,10 +122,6 @@ export function accountFromAuthList(output: string, profile: string): string | u
   return undefined;
 }
 
-export async function modelBuilder(ctx: PacContext, args: string[]): Promise<void> {
-  await pac(ctx, ["modelbuilder", "build", ...args], "pac modelbuilder build failed.");
-}
-
 export async function solutionExport(ctx: PacContext, client: Client, name: string, zipPath: string, managed: boolean): Promise<void> {
   const args = ["solution", "export", "--name", name, "--path", zipPath, "--environment", client.config.org, "--overwrite"];
   if (managed) args.push("--managed");
@@ -144,8 +148,9 @@ export async function pcfInit(ctx: PacContext, o: { namespace: string; name: str
   );
 }
 
-export async function pcfPush(ctx: PacContext, controlDir: string, publisherPrefix: string): Promise<void> {
-  await pac(ctx, ["pcf", "push", "--publisher-prefix", publisherPrefix], "Pushing the PCF control failed.", controlDir);
+/** Names the org, since the selected profile's own org can be another environment's. */
+export async function pcfPush(ctx: PacContext, client: Client, controlDir: string, publisherPrefix: string): Promise<void> {
+  await pac(ctx, ["pcf", "push", "--publisher-prefix", publisherPrefix, "--environment", client.config.org], "Pushing the PCF control failed.", controlDir);
 }
 
 export interface PagesSite {

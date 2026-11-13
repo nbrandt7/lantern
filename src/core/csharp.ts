@@ -102,7 +102,8 @@ function skipString(text: string, i: number): number {
     else interpolated = true;
     j++;
   }
-  if (text.startsWith('"""', j)) {
+  // Raw strings ("""…""") can't be verbatim: @"""" is a verbatim string holding one quote.
+  if (!verbatim && text.startsWith('"""', j)) {
     let quotes = 0;
     while (text[j + quotes] === '"') quotes++;
     const close = text.indexOf('"'.repeat(quotes), j + quotes);

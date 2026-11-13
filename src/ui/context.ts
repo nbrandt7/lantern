@@ -75,7 +75,7 @@ export async function resolveClient(_arg?: unknown): Promise<Client | undefined>
  */
 export async function withProgress<T>(
   title: string,
-  task: (ctx: PacContext & { cancel: Cancellation }, progress: vscode.Progress<{ message?: string }>) => Promise<T>,
+  task: (ctx: PacContext & { cancel: Cancellation }, progress: vscode.Progress<{ message?: string; increment?: number }>) => Promise<T>,
   options: { quiet?: boolean } = {}
 ): Promise<T | undefined> {
   const started = Date.now();
@@ -88,7 +88,7 @@ export async function withProgress<T>(
         title,
         cancellable: !options.quiet,
       },
-      (progress: vscode.Progress<{ message?: string }>, token: vscode.CancellationToken) =>
+      (progress: vscode.Progress<{ message?: string; increment?: number }>, token: vscode.CancellationToken) =>
         task({ pacPath: settings().pacPath, log: write, token, cancel: token, confirmProfileAccount, appSecret: (c: Client) => appSecret(c) }, progress)
     );
     logEvent(`Task completed: ${title} (${Date.now() - started} ms)`);
