@@ -154,7 +154,14 @@ export function encodeLiteral(text: string, kind: LiteralKind, language: "js" | 
     return "`" + text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\{\{([^}]+)\}\}/g, "${$1}") + "`";
   }
   if (kind === "raw") return `"""\n${text}\n"""`;
-  const interpolated = kind === "interpolated" || /\{\{[^}]+\}\}/.test(text);
-  const body = text.replace(/"/g, '""').replace(/\{\{([^}]+)\}\}/g, "{$1}");
-  return `${interpolated ? "$@" : "@"}"${body}"`;
+  const body = text.replace(/"/g, '""');
+  // In $@"…" a brace opens an interpolation hole, so any brace that isn't one has to be doubled
+  // ({8A3B…} from Advanced Find would otherwise not compile).
+  if (kind === "interpolated") {
+    // The text is already in $@ form: {x} holes and {{ }} escapes stay as they are.
+    return `$@"${body.replace(/\{\{|\}\}|\{[A-Za-z_][\w.()]*\}|[{}]/g, (m) => (m.length === 1 ? m + m : m))}"`;
+  }
+  // A + chain's {{x}} placeholders become holes.
+  if (/\{\{[^}]+\}\}/.test(text)) return `$@"${body.replace(/\{\{([^}]+)\}\}|[{}]/g, (m, expr: string | undefined) => (expr !== undefined ? `{${expr}}` : m + m))}"`;
+  return `@"${body}"`;
 }

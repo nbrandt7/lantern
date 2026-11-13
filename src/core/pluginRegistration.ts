@@ -1,5 +1,5 @@
 import * as crypto from "crypto";
-import { AssemblyMetadata, PluginClass } from "./assembly";
+import { AssemblyMetadata, PluginClass, readAssembly } from "./assembly";
 import { DataverseClient } from "./dataverse";
 import { COMPONENT_TYPE } from "./dependencies";
 import { readZip } from "./zip";
@@ -11,6 +11,7 @@ import { readZip } from "./zip";
  * registered assembly and its steps; only its content changes.
  */
 
+export const ISOLATION_NONE = 1;
 export const ISOLATION_SANDBOX = 2;
 export const SOURCE_DATABASE = 0;
 
@@ -69,19 +70,20 @@ export async function stepsOf(dv: DataverseClient, pluginTypeId: string): Promis
 }
 
 export interface RemovalCheck {
-  type: RegisteredType;
+  type: Pick<RegisteredType, "plugintypeid" | "typename">;
   steps: StepRow[];
   /** Why Lantern won't unregister this type. Empty means it's safe to remove with its steps. */
   problems: string[];
 }
 
 /**
- * Before unregistering types the build no longer has: their steps, and anything
- * else that depends on them (custom APIs, processes using a workflow activity,
- * data providers). Managed steps, other dependents, or a failed check all block,
- * so nothing is deleted that Dataverse or the user would need back.
+ * Before unregistering types (the build no longer has them, or their package is
+ * going): their steps, and anything else that depends on them (custom APIs,
+ * processes using a workflow activity, data providers). Managed steps, other
+ * dependents, or a failed check all block, so nothing is deleted that Dataverse
+ * or the user would need back.
  */
-export async function checkRemovals(dv: DataverseClient, missing: RegisteredType[]): Promise<RemovalCheck[]> {
+export async function checkRemovals(dv: DataverseClient, missing: Array<RemovalCheck["type"]>): Promise<RemovalCheck[]> {
   const out: RemovalCheck[] = [];
   for (const type of missing) {
     const steps = await stepsOf(dv, type.plugintypeid);
@@ -234,25 +236,43 @@ export interface PushResult {
   removedSteps: number;
 }
 
-function typeBody(meta: AssemblyMetadata, c: PluginClass, assemblyId: string): Record<string, unknown> {
+/** What the Plugin Registration Tool lets you set on a plug-in type. Empty fields fall back to its defaults. */
+export interface TypeDetails {
+  name?: string;
+  friendlyName?: string;
+  description?: string;
+  workflowGroup?: string;
+}
+
+/** What the Plugin Registration Tool lets you set when registering an assembly. */
+export interface AssemblyDetails {
+  description?: string;
+  isolationMode?: number;
+  /** By full type name. */
+  types?: Record<string, TypeDetails>;
+}
+
+function typeBody(meta: AssemblyMetadata, c: PluginClass, assemblyId: string, details: TypeDetails = {}): Record<string, unknown> {
   return {
     typename: c.typeName,
-    name: c.typeName,
+    name: details.name || c.typeName,
     // The Plugin Registration Tool's default: a GUID, so the tree shows the type name.
-    friendlyname: crypto.randomUUID(),
-    ...(c.kind === "workflow" ? { workflowactivitygroupname: defaultGroupName(meta.name, meta.version) } : {}),
+    friendlyname: details.friendlyName || crypto.randomUUID(),
+    ...(details.description ? { description: details.description } : {}),
+    ...(c.kind === "workflow" ? { workflowactivitygroupname: details.workflowGroup || defaultGroupName(meta.name, meta.version) } : {}),
     "pluginassemblyid@odata.bind": `/pluginassemblies(${assemblyId})`,
   };
 }
 
-/** First registration: the assembly (sandboxed, stored in the database) and a type for each class. */
+/** First registration: the assembly (sandboxed unless chosen otherwise, stored in the database) and a type for each class. */
 export async function registerAssembly(
   dv: DataverseClient,
   meta: AssemblyMetadata,
   content: Buffer,
-  options: { solution?: string; log?: (line: string) => void } = {}
+  options: { solution?: string; details?: AssemblyDetails; log?: (line: string) => void } = {}
 ): Promise<PushResult> {
   const headers: Record<string, string> = options.solution ? { "MSCRM.SolutionUniqueName": options.solution } : {};
+  const details = options.details ?? {};
   const assemblyId = await dv.create(
     "pluginassemblies",
     {
@@ -260,8 +280,9 @@ export async function registerAssembly(
       version: meta.version,
       culture: meta.culture,
       publickeytoken: meta.publicKeyToken ?? null,
-      isolationmode: ISOLATION_SANDBOX,
+      isolationmode: details.isolationMode ?? ISOLATION_SANDBOX,
       sourcetype: SOURCE_DATABASE,
+      ...(details.description ? { description: details.description } : {}),
       content: content.toString("base64"),
     },
     headers
@@ -270,7 +291,7 @@ export async function registerAssembly(
   const newTypes: PushResult["newTypes"] = [];
   for (const c of meta.pluginClasses) {
     // Like the Plugin Registration Tool: only the assembly goes into the solution; its types come with it.
-    const id = await dv.create("plugintypes", typeBody(meta, c, assemblyId));
+    const id = await dv.create("plugintypes", typeBody(meta, c, assemblyId, details.types?.[c.typeName]));
     options.log?.(`Registered ${c.kind === "workflow" ? "workflow activity" : "plug-in"} ${c.typeName}\n`);
     newTypes.push({ id, typeName: c.typeName, kind: c.kind });
   }
@@ -351,21 +372,102 @@ export function readPackage(nupkg: Buffer): PackageInfo {
   return { id, version };
 }
 
+/** An assembly's DLL inside a .nupkg (lib/<framework>/<assembly>.dll), or undefined when it isn't there. */
+export function assemblyInPackage(nupkg: Buffer, assembly: string): Buffer | undefined {
+  return readZip(nupkg).find((e) => e.name.toLowerCase().endsWith(`/${assembly.toLowerCase()}.dll`))?.data;
+}
+
+/** An assembly's version, for messages; never throws. */
+export function versionOf(dll: Buffer): string {
+  try {
+    return readAssembly(dll).version;
+  } catch {
+    return "an unreadable version";
+  }
+}
+
+/**
+ * Why the .nupkg found after a build isn't that build's package, or undefined when it is: the DLL
+ * inside has to be the DLL the build made (built, from bin; undefined when there's none to compare).
+ * A build writes its package after the DLL, and the copies of the DLL in bin and the publish folder
+ * keep its time, so a package older than the DLL wasn't made from it. That holds for a version that
+ * never changes (1.0.0.0) too, and doesn't depend on the clock. A package packed after the DLL with
+ * the same version is accepted even when the bytes differ (a packaging step may change the DLL).
+ */
+export function stalePackageReason(
+  pkg: { name: string; content: Buffer; writtenAt: number },
+  built: { content: Buffer; writtenAt: number } | undefined,
+  assembly: string
+): string | undefined {
+  if (!built) return undefined;
+  const packaged = assemblyInPackage(pkg.content, assembly);
+  if (!packaged) return `${assembly}.dll isn't in ${pkg.name}.`;
+  if (packaged.equals(built.content)) return undefined;
+  const inside = versionOf(packaged);
+  const made = versionOf(built.content);
+  const packedAfter = pkg.writtenAt >= built.writtenAt;
+  if (packedAfter && inside === made) return undefined;
+  if (packedAfter) return `${pkg.name} holds ${assembly} ${inside}, but the build made ${made}.`;
+  const holds = inside === made ? `an older build of ${assembly} (also ${inside})` : `${assembly} ${inside}`;
+  return `${pkg.name} (${new Date(pkg.writtenAt).toLocaleString()}) is older than the ${assembly}.dll this build made (${made}) and holds ${holds}: the build didn't pack the new DLL.`;
+}
+
+/**
+ * The version of an assembly when the registered package already holds this exact build of it (the same
+ * DLL), else undefined. Only a matching version costs the download of the package's content.
+ */
+export async function deployedInPackage(dv: DataverseClient, packageId: string, assembly: string, dll: Buffer): Promise<string | undefined> {
+  const version = versionOf(dll);
+  const rows = await dv.getAll<{ name: string; version: string }>(`pluginassemblies?$select=name,version&$filter=_packageid_value eq ${packageId}`);
+  if (!rows.some((r) => r.name.toLowerCase() === assembly.toLowerCase() && r.version === version)) return undefined;
+  const row = await dv.getJson<{ content?: string | null }>(`pluginpackages(${packageId})?$select=content`);
+  const deployed = row.content ? assemblyInPackage(Buffer.from(row.content, "base64"), assembly) : undefined;
+  return deployed?.equals(dll) ? version : undefined;
+}
+
 export interface RegisteredPackage {
   pluginpackageid: string;
+  name?: string | null;
   uniquename: string;
   version: string;
   ismanaged: boolean;
 }
 
+/**
+ * Whether a registered package is the one with this package ID. The Plugin Registration
+ * Tool registers package "Contoso.Plugins" as uniquename "contoso_Contoso.Plugins" (the
+ * publisher's prefix), so both spellings count, and so does a name equal to the ID.
+ */
+export function isPackageFor(row: Pick<RegisteredPackage, "uniquename" | "name">, packageId: string): boolean {
+  const id = packageId.toLowerCase();
+  const unique = row.uniquename.toLowerCase();
+  if (unique === id || (row.name ?? "").toLowerCase() === id) return true;
+  return unique.endsWith(`_${id}`) && /^[a-z0-9]+$/.test(unique.slice(0, unique.length - id.length - 1));
+}
+
 export async function registeredPackage(dv: DataverseClient, pkg: PackageInfo, savedId?: string): Promise<RegisteredPackage | undefined> {
-  const columns = "pluginpackageid,uniquename,version,ismanaged";
+  const columns = "pluginpackageid,name,uniquename,version,ismanaged";
   if (savedId) {
     const byId = await dv.getAll<RegisteredPackage>(`pluginpackages?$select=${columns}&$filter=pluginpackageid eq ${savedId}`);
     // A saved ID only counts when it's the same package; an old ID must never receive another package's content.
-    if (byId[0] && byId[0].uniquename.toLowerCase() === pkg.id.toLowerCase()) return byId[0];
+    if (byId[0] && isPackageFor(byId[0], pkg.id)) return byId[0];
   }
-  return (await dv.getAll<RegisteredPackage>(`pluginpackages?$select=${columns}&$filter=uniquename eq '${q(pkg.id)}'`))[0];
+  const id = q(pkg.id);
+  const rows = await dv.getAll<RegisteredPackage>(`pluginpackages?$select=${columns}&$filter=uniquename eq '${id}' or endswith(uniquename,'_${id}') or name eq '${id}'`);
+  return rows.find((r) => isPackageFor(r, pkg.id));
+}
+
+/** The customization prefix of a solution's publisher; with no solution, the Default solution's publisher (where Dataverse puts the component). */
+export async function publisherPrefix(dv: DataverseClient, solution?: string): Promise<string | undefined> {
+  const rows = await dv.getAll<{ publisherid?: { customizationprefix?: string | null } | null }>(
+    `solutions?$select=uniquename&$filter=uniquename eq '${q(solution || "Default")}'&$expand=publisherid($select=customizationprefix)`
+  );
+  return rows[0]?.publisherid?.customizationprefix || undefined;
+}
+
+/** Dataverse requires a package's unique name to start with a publisher prefix: "contoso_" + the package ID, unless the ID already has it. */
+export function packageUniqueName(packageId: string, prefix: string): string {
+  return packageId.toLowerCase().startsWith(`${prefix.toLowerCase()}_`) ? packageId : `${prefix}_${packageId}`;
 }
 
 /** Creates or updates a plug-in package. Dataverse registers the assemblies and types inside it itself. */
@@ -374,18 +476,98 @@ export async function pushPackage(
   pkg: PackageInfo,
   content: Buffer,
   existing: RegisteredPackage | undefined,
-  options: { solution?: string } = {}
-): Promise<{ id: string; created: boolean }> {
+  options: { solution?: string; name?: string; uniqueName?: string } = {}
+): Promise<{ id: string; created: boolean; uniqueName: string }> {
   if (existing) {
-    await dv.update(`pluginpackages(${existing.pluginpackageid})`, { content: content.toString("base64") });
-    return { id: existing.pluginpackageid, created: false };
+    await dv.update(`pluginpackages(${existing.pluginpackageid})`, {
+      content: content.toString("base64"),
+      ...(existing.version !== pkg.version ? { version: pkg.version } : {}),
+    });
+    return { id: existing.pluginpackageid, created: false, uniqueName: existing.uniquename };
   }
+  const uniqueName = options.uniqueName || pkg.id;
   const id = await dv.create(
     "pluginpackages",
-    { name: pkg.id, uniquename: pkg.id, version: pkg.version, content: content.toString("base64") },
+    { name: options.name || pkg.id, uniquename: uniqueName, version: pkg.version, content: content.toString("base64") },
     options.solution ? { "MSCRM.SolutionUniqueName": options.solution } : {}
   );
-  return { id, created: true };
+  return { id, created: true, uniqueName };
+}
+
+// ---------- editing a registration ----------
+
+export interface AssemblyProps {
+  pluginassemblyid: string;
+  name: string;
+  version: string;
+  description: string | null;
+  isolationmode: number;
+  ismanaged: boolean;
+  _packageid_value?: string | null;
+}
+
+export interface TypeProps {
+  plugintypeid: string;
+  typename: string;
+  name: string | null;
+  friendlyname: string | null;
+  description: string | null;
+  workflowactivitygroupname: string | null;
+  isworkflowactivity: boolean;
+  ismanaged: boolean;
+  _pluginassemblyid_value: string;
+}
+
+export interface PackageProps {
+  pluginpackageid: string;
+  name: string | null;
+  uniquename: string;
+  version: string;
+  ismanaged: boolean;
+}
+
+const TYPE_PROPS = "plugintypeid,typename,name,friendlyname,description,workflowactivitygroupname,isworkflowactivity,ismanaged,_pluginassemblyid_value";
+
+/** An assembly's editable properties, its types', and its package's when it's in one. */
+export async function registrationProps(dv: DataverseClient, assemblyId: string): Promise<{ assembly: AssemblyProps; types: TypeProps[]; pkg?: PackageProps }> {
+  const assembly = await dv.getJson<AssemblyProps>(`pluginassemblies(${assemblyId})?$select=pluginassemblyid,name,version,description,isolationmode,ismanaged,_packageid_value`);
+  const types = await dv.getAll<TypeProps>(`plugintypes?$select=${TYPE_PROPS}&$filter=_pluginassemblyid_value eq ${assemblyId}&$orderby=typename`);
+  const pkg = assembly._packageid_value
+    ? await dv.getJson<PackageProps>(`pluginpackages(${assembly._packageid_value})?$select=pluginpackageid,name,uniquename,version,ismanaged`)
+    : undefined;
+  return { assembly, types, pkg };
+}
+
+export async function typeProps(dv: DataverseClient, typeId: string): Promise<TypeProps> {
+  return dv.getJson<TypeProps>(`plugintypes(${typeId})?$select=${TYPE_PROPS}`);
+}
+
+export interface RegistrationChanges {
+  assembly?: { id: string; patch: Record<string, unknown> };
+  pkg?: { id: string; patch: Record<string, unknown> };
+  types: Array<{ id: string; typeName: string; patch: Record<string, unknown> }>;
+}
+
+/** Saves edited properties: one update per row that changed. */
+export async function saveRegistration(dv: DataverseClient, changes: RegistrationChanges, log?: (line: string) => void): Promise<number> {
+  let n = 0;
+  if (changes.pkg && Object.keys(changes.pkg.patch).length) {
+    await dv.update(`pluginpackages(${changes.pkg.id})`, changes.pkg.patch);
+    log?.(`Updated the package: ${Object.keys(changes.pkg.patch).join(", ")}\n`);
+    n++;
+  }
+  if (changes.assembly && Object.keys(changes.assembly.patch).length) {
+    await dv.update(`pluginassemblies(${changes.assembly.id})`, changes.assembly.patch);
+    log?.(`Updated the assembly: ${Object.keys(changes.assembly.patch).join(", ")}\n`);
+    n++;
+  }
+  for (const t of changes.types) {
+    if (!Object.keys(t.patch).length) continue;
+    await dv.update(`plugintypes(${t.id})`, t.patch);
+    log?.(`Updated ${t.typeName}: ${Object.keys(t.patch).join(", ")}\n`);
+    n++;
+  }
+  return n;
 }
 
 // ---------- downloading ----------
@@ -421,4 +603,58 @@ export async function downloadAssembly(dv: DataverseClient, a: OrgAssembly): Pro
   const row = await dv.getJson<{ content?: string | null }>(`pluginassemblies(${a.pluginassemblyid})?$select=content`);
   if (!row.content) throw new Error(`Dataverse returned no content for ${a.name}. It may be registered on disk or in the GAC (on-premises), where Dataverse doesn't keep a copy.`);
   return { dll: Buffer.from(row.content, "base64"), dependencies: [] };
+}
+
+// ---------- unregistering a package ----------
+
+export interface PackageContents {
+  pkg: RegisteredPackage;
+  assemblies: RegisteredAssembly[];
+  types: Array<{ plugintypeid: string; typename: string; _pluginassemblyid_value: string }>;
+  steps: Array<{ id: string; name: string; secureConfigId: string | null }>;
+}
+
+/** The org's unmanaged plug-in packages, by name. */
+export async function listPackages(dv: DataverseClient): Promise<RegisteredPackage[]> {
+  return dv.getAll<RegisteredPackage>("pluginpackages?$select=pluginpackageid,name,uniquename,version,ismanaged&$filter=ismanaged eq false&$orderby=name");
+}
+
+/** What unregistering the package deletes: its assemblies, their plug-in types, and every step on those types. */
+export async function packageContents(dv: DataverseClient, pkg: RegisteredPackage): Promise<PackageContents> {
+  const assemblies = await dv.getAll<RegisteredAssembly>(`pluginassemblies?$select=${ASSEMBLY_COLUMNS}&$filter=_packageid_value eq ${pkg.pluginpackageid}`);
+  const types: PackageContents["types"] = [];
+  for (const a of assemblies) {
+    types.push(...(await dv.getAll<PackageContents["types"][number]>(`plugintypes?$select=plugintypeid,typename,_pluginassemblyid_value&$filter=_pluginassemblyid_value eq ${a.pluginassemblyid}`)));
+  }
+  const steps: PackageContents["steps"] = [];
+  for (const t of types) {
+    const rows = await dv.getAll<{ sdkmessageprocessingstepid: string; name: string; _sdkmessageprocessingstepsecureconfigid_value: string | null }>(
+      `sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,_sdkmessageprocessingstepsecureconfigid_value&$filter=_plugintypeid_value eq ${t.plugintypeid}`
+    );
+    steps.push(...rows.map((r) => ({ id: r.sdkmessageprocessingstepid, name: r.name, secureConfigId: r._sdkmessageprocessingstepsecureconfigid_value })));
+  }
+  return { pkg, assemblies, types, steps };
+}
+
+/**
+ * Deletes the package. Dataverse removes its assemblies and plug-in types with it, but refuses
+ * while any of their steps exist, so the steps go first (their images go with them; secure
+ * configurations are removed too, as the Plugin Registration Tool does). Run checkRemovals on
+ * its types first: once the steps are gone, anything else that stops the package delete
+ * leaves them gone.
+ */
+export async function unregisterPackage(dv: DataverseClient, c: PackageContents, log?: (line: string) => void): Promise<void> {
+  for (const step of c.steps) {
+    await dv.remove(`sdkmessageprocessingsteps(${step.id})`);
+    log?.(`Unregistered step ${step.name}\n`);
+    if (step.secureConfigId) {
+      try {
+        await dv.remove(`sdkmessageprocessingstepsecureconfigs(${step.secureConfigId})`);
+      } catch (err) {
+        log?.(`Couldn't remove the secure configuration of ${step.name}: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  }
+  await dv.remove(`pluginpackages(${c.pkg.pluginpackageid})`);
+  log?.(`Unregistered package ${c.pkg.uniquename}${c.assemblies.length ? ` with ${c.assemblies.map((a) => a.name).join(", ")}` : ""}\n`);
 }

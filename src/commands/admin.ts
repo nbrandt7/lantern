@@ -399,7 +399,7 @@ async function useAppRegistration(client: Client, tree: WorkspaceTree): Promise<
   if (!tenant) return;
   const secret = await vscode.window.showInputBox({
     title: "Client secret",
-    prompt: "Stored in VS Code's secret storage, never in .lantern/config.json",
+    prompt: "Stored in VS Code's secret storage, never in the tenant configuration",
     password: true,
     ignoreFocusOut: true,
     validateInput: (v: string) => (v ? undefined : "Enter the secret."),

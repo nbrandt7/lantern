@@ -3,9 +3,10 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { Client } from "../core/clients";
 import { parseCsv } from "../core/csv";
+import { UserError } from "../core/errors";
 import { ColumnMeta, MetadataService, TableMeta } from "../core/metadata";
 import { Cell, QueryContext, ResultSet } from "../core/query";
-import { LookupResolver, prepareValues } from "../core/write";
+import { limits, LookupResolver, prepareValues, RowWrite, sendRows } from "../core/write";
 import { dataverseFor } from "../ui/auth";
 import { confirmProtected, reportError, settings, withProgress } from "../ui/context";
 import { ResultsView } from "../ui/results";
@@ -102,33 +103,39 @@ async function importCsv(client: Client, table: TableMeta, service: MetadataServ
   };
   const lookups = new LookupResolver(ctx);
   const outcome = await withProgress(`Importing into ${table.displayName}`, async (pctx, progress) => {
-    const rows: Cell[][] = [];
-    const ids: Array<string | undefined> = [];
+    // Prepare every row first (lookups and choices can be refused), then send the rest in batches.
+    const names: string[] = [];
+    const writes: RowWrite[] = [];
     for (const [i, r] of plan.rows.entries()) {
-      if (pctx.token?.isCancellationRequested) break;
-      const id = plan.idIndex >= 0 ? (r[plan.idIndex] ?? "").trim() : "";
-      const assignments = plan.mapping.flatMap((c, j) => (c && j !== plan.idIndex && (r[j] ?? "") !== "" ? [{ column: c.logicalName, value: r[j] }] : []));
-      const name = table.primaryName ? r[plan.mapping.findIndex((c) => c?.logicalName === table.primaryName)] ?? `row ${i + 1}` : `row ${i + 1}`;
+      const id = plan.idIndex >= 0 ? (r[plan.idIndex] ?? "").trim().replace(/^\{(.*)\}$/, "$1") : "";
+      const assignments = plan.mapping.flatMap((c, j) => (c && j !== plan.idIndex && (r[j] ?? "").trim() !== "" ? [{ column: c.logicalName, value: r[j] }] : []));
+      names.push(table.primaryName ? r[plan.mapping.findIndex((c) => c?.logicalName === table.primaryName)] ?? `row ${i + 1}` : `row ${i + 1}`);
       try {
+        // The ID goes into the batch's request line, so anything but a GUID would break (or rewrite) the request.
+        if (id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new UserError(`The ID '${id}' isn't a GUID.`);
         const p = await prepareValues(table, columns, assignments, ctx, lookups);
-        if (id) {
-          await dv.update(`${table.entitySetName}(${id})`, p.body);
-          rows.push([{ raw: i + 2 }, { raw: name }, { raw: "Updated" }]);
-          ids.push(id);
-        } else {
-          ids.push(await dv.create(table.entitySetName, p.body));
-          rows.push([{ raw: i + 2 }, { raw: name }, { raw: "Created" }]);
-        }
+        writes.push(
+          id
+            ? { verb: "Updated", id, items: [{ method: "PATCH", path: `${table.entitySetName}(${id})`, body: p.body, headers: { "If-Match": "*" } }] }
+            : { verb: "Created", items: [{ method: "POST", path: table.entitySetName, body: p.body }] }
+        );
       } catch (err) {
-        rows.push([{ raw: i + 2 }, { raw: name }, { raw: `Failed: ${err instanceof Error ? err.message : String(err)}` }]);
-        ids.push(id || undefined);
+        writes.push({ verb: id ? "Updated" : "Created", id: id || undefined, items: [], failed: err instanceof Error ? err.message : String(err) });
       }
-      if (i % 10 === 0) progress.report({ message: `${i + 1} of ${plan.rows.length}` });
     }
-    return { rows, ids };
+    const n = plan.rows.length;
+    pctx.log(`Importing ${n.toLocaleString()} ${table.logicalName} rows in batches of ${limits.startBatchSize} to start (then sized to take about ${Math.round(limits.batchMs / 1000)} s each), ${limits.concurrency} at a time to start\n`);
+    const started = Date.now();
+    const outcomes = await sendRows(writes, dv, (done) => progress.report({ message: `${done.toLocaleString()} of ${n.toLocaleString()} rows` }), pctx.token, pctx.log);
+    pctx.log(`Import finished in ${Date.now() - started} ms\n`);
+    return {
+      rows: outcomes.map((o, i): Cell[] => [{ raw: i + 2 }, { raw: names[i] }, { raw: o.result }]),
+      ids: outcomes.map((o) => o.id),
+    };
   });
   if (!outcome) return;
   const failed = outcome.rows.filter((r) => String(r[2].raw).startsWith("Failed")).length;
+  const skipped = outcome.rows.filter((r) => String(r[2].raw).startsWith("Skipped")).length;
   await results.show(`Import (${client.name})`, client, {
     sets: [{
       source: `Import ${path.basename(file)} into ${table.logicalName}`,
@@ -143,5 +150,7 @@ async function importCsv(client: Client, table: TableMeta, service: MetadataServ
     }],
     errors: [],
   });
-  void vscode.window.showInformationMessage(`Imported ${outcome.rows.length - failed} of ${plan.rows.length} rows${failed ? `; ${failed} failed (see the results)` : ""}.`);
+  void vscode.window.showInformationMessage(
+    `Imported ${(plan.rows.length - failed - skipped).toLocaleString()} of ${plan.rows.length.toLocaleString()} rows${failed ? `; ${failed} failed (see the results)` : ""}${skipped ? `; ${skipped} skipped (cancelled)` : ""}.`
+  );
 }

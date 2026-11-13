@@ -18,6 +18,16 @@ import { clientForQuery, isFetchXml, queryCodeLenses } from "../commands/query";
 /** Shows the active editor's client and org; click for that client's actions. */
 export class ClientStatusBar {
   private readonly item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  private timer: NodeJS.Timeout | undefined;
+
+  /** After edits: a document becomes a query (FetchXML pasted into an XML file) without the editor changing. */
+  schedule(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.update();
+    }, 300);
+  }
 
   update(): void {
     const doc = vscode.window.activeTextEditor?.document;
@@ -151,7 +161,7 @@ export class DataverseCodeLens implements vscode.CodeLensProvider {
         lenses.push(new vscode.CodeLens(at, { title, tooltip: "Show this class and its steps in the Lantern view", command: "lantern.focusSteps", arguments: [{ client, typeName: cls.fullName }] }));
       }
       if (cls.pluginKind === "plugin") {
-        lenses.push(new vscode.CodeLens(at, { title: "$(add) Register step", command: "lantern.steps.register", arguments: [{ client, assembly: plugin?.assembly, typeName: cls.fullName }] }));
+        lenses.push(new vscode.CodeLens(at, { title: "$(add) Register step", command: "lantern.steps.register", arguments: [{ client, assembly: plugin?.assembly, typeName: cls.fullName, typeId: match?.type?.plugintypeid }] }));
       }
       if (match?.type && plugin) {
         lenses.push(new vscode.CodeLens(at, { title: "$(git-compare) Compare with deployed", command: "lantern.plugins.compareDeployed", arguments: [{ client, plugin, typeName: cls.fullName }] }));

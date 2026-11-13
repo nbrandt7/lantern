@@ -42,6 +42,10 @@ export interface QueryContext {
   entitySetOf: (table: string) => Promise<string>;
   primaryIdOf: (table: string) => string | undefined;
   maxRows: number;
+  /** Checked between pages: a cancelled query returns the rows it has, marked truncated. */
+  cancel?: { isCancellationRequested: boolean };
+  /** Called after each page with the rows so far. */
+  onPage?: (rows: number) => void;
 }
 
 type Row = Record<string, unknown>;
@@ -51,7 +55,8 @@ type Row = Record<string, unknown>;
  * the text isn't FetchXML.
  */
 export function fetchXmlStart(text: string): number {
-  const m = /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<fetch[\s>]/i.exec(text);
+  // A comment's body can't run past its own "-->"; a lazy [\s\S]*? there backtracks exponentially over a run of comments.
+  const m = /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--(?:(?!-->)[\s\S])*-->\s*)*<fetch[\s>]/i.exec(text);
   return m ? m[0].lastIndexOf("<fetch") : -1;
 }
 
@@ -122,7 +127,10 @@ export async function executeFetch(
   const rows: Row[] = [];
   let truncated = false;
   if (!pageable) {
-    rows.push(...(await page(ctx.dv, entitySet, fetchXml)).value);
+    const result = await page(ctx.dv, entitySet, fetchXml);
+    rows.push(...result.value);
+    // Aggregates and the like come back as one page (5,000 rows at most); say so when there was more.
+    truncated = result[MORE_RECORDS] === true && !/\stop\s*=/i.test(fetchXml.slice(0, fetchXml.indexOf(">")));
   } else {
     const count = Math.min(5000, ctx.maxRows);
     let pageNumber = 1;
@@ -131,9 +139,11 @@ export async function executeFetch(
       const xml = withFetchAttributes(fetchXml, { count: String(count), page: String(pageNumber), "paging-cookie": cookie });
       const result = await page(ctx.dv, entitySet, xml);
       rows.push(...result.value);
+      ctx.onPage?.(rows.length);
       const more = result[MORE_RECORDS] === true;
       if (!more) break;
-      if (rows.length >= ctx.maxRows) {
+      // Dataverse caps a page at 250 rows when a File column is selected, so a big query is many pages: let Cancel end it.
+      if (rows.length >= ctx.maxRows || ctx.cancel?.isCancellationRequested) {
         truncated = true;
         break;
       }
@@ -228,6 +238,13 @@ export function toCsv(set: ResultSet, formatted: boolean): string {
 }
 
 export function toJson(set: ResultSet, formatted: boolean): string {
-  const rows = set.rows.map((row) => Object.fromEntries(set.columns.map((col, i) => [col, formatted ? cellText(row[i], true) : row[i].raw])));
+  // Two columns with one header (SELECT name, name) would share a key and lose one: number the repeats.
+  const seen = new Map<string, number>();
+  const keys = set.columns.map((col) => {
+    const n = (seen.get(col) ?? 0) + 1;
+    seen.set(col, n);
+    return n === 1 ? col : `${col} (${n})`;
+  });
+  const rows = set.rows.map((row) => Object.fromEntries(keys.map((key, i) => [key, formatted ? cellText(row[i], true) : row[i].raw])));
   return JSON.stringify(rows, null, 2) + "\n";
 }

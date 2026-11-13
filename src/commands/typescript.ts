@@ -3,7 +3,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { Client } from "../core/clients";
 import { UserError } from "../core/errors";
-import { writeJson } from "../core/files";
+import { isInside, writeJson } from "../core/files";
 import { run } from "../core/process";
 import { findSolutionFolders } from "../core/solutions";
 import { clientForPath, reportError, resolveClient, settings, withProgress, workspaceRoots, write } from "../ui/context";
@@ -27,24 +27,50 @@ function readTsconfig(file: string): { compilerOptions?: { outDir?: string; root
   return JSON.parse(text);
 }
 
-/** The .js file tsc writes for a .ts file under a tsconfig. */
-export function outputFor(tsconfig: string, file: string): string | undefined {
+/** outDir without rootDir: where a file's output goes depends on the project's other files (and tsc's version). */
+function outputVaries(tsconfig: string): boolean {
+  const o = readTsconfig(tsconfig).compilerOptions ?? {};
+  return !o.outFile && !!o.outDir && !o.rootDir;
+}
+
+/**
+ * The .js file tsc writes for a .ts file under a tsconfig. `emitted` is what tsc said it wrote
+ * (--listEmittedFiles): needed when there's an outDir but no rootDir, where tsc 5 mirrors the folders
+ * below the common folder of the project's files (include ["src"] puts src/account.ts at outDir/account.js).
+ */
+export function outputFor(tsconfig: string, file: string, emitted: string[] = []): string | undefined {
   const dir = path.dirname(tsconfig);
   const o = readTsconfig(tsconfig).compilerOptions ?? {};
   if (o.outFile) return path.resolve(dir, o.outFile);
   if (!o.outDir) return file.replace(/\.ts$/i, ".js");
+  const outDir = path.resolve(dir, o.outDir);
+  if (!o.rootDir) {
+    // The written file whose path below outDir ends the source's path; the longest such is the source's own.
+    const key = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+    const stem = key(file.replace(/\.ts$/i, ""));
+    const own = emitted
+      .map((e) => path.resolve(e))
+      .filter((e) => /\.js$/i.test(e) && isInside(e, outDir))
+      .map((e) => ({ e, rel: path.relative(outDir, e).replace(/\.js$/i, "") }))
+      .filter((x) => stem.endsWith(key(path.sep + x.rel)))
+      .sort((a, b) => b.rel.length - a.rel.length)[0];
+    if (own) return own.e;
+  }
   const root = path.resolve(dir, o.rootDir ?? ".");
-  return path.join(path.resolve(dir, o.outDir), path.relative(root, file)).replace(/\.ts$/i, ".js");
+  return path.join(outDir, path.relative(root, file)).replace(/\.ts$/i, ".js");
 }
 
-async function tsc(tsconfig: string, client: Client): Promise<void> {
+/** Runs tsc on a project; returns the files it wrote when the output folder layout needs them. */
+async function tsc(tsconfig: string, client: Client): Promise<string[]> {
   const bin = process.platform === "win32" ? "tsc.cmd" : "tsc";
   const candidates = [client.dir, ...workspaceRoots()].map((d) => path.join(d, "node_modules", ".bin", bin)).filter((p) => fs.existsSync(p));
   const exe = candidates[0] ?? "tsc";
+  const list = outputVaries(tsconfig);
   write(`> ${exe} -p ${tsconfig}\n`);
-  const r = await run(exe, ["-p", tsconfig], { onOutput: write });
+  const r = await run(exe, ["-p", tsconfig, ...(list ? ["--listEmittedFiles"] : [])], { onOutput: list ? (text) => write(text.replace(/^TSFILE: .*(\r?\n|$)/gm, "")) : write });
   if (r.missing) throw new UserError('TypeScript isn\'t installed. Run "npm install -D typescript" in the workspace folder.');
   if (r.code !== 0) throw new UserError("TypeScript reported errors (see the Problems panel or the Lantern output). Nothing was pushed.");
+  return [...r.stdout.matchAll(/^TSFILE: (.+?)\r?$/gm)].map((m) => m[1]);
 }
 
 /** Compiles the project a .ts file belongs to, then pushes that file's .js output. */
@@ -53,12 +79,9 @@ export async function compileAndPush(file: string, push: boolean): Promise<void>
   if (!client) return;
   const config = tsconfigFor(file, client.dir);
   if (!config) throw new UserError(`No tsconfig.json between ${path.basename(file)} and the client folder. Run "Set Up TypeScript Web Resources" first.`);
-  const out = outputFor(config, file);
-  const ok = await withProgress(`Compiling ${path.basename(file)}`, async () => {
-    await tsc(config, client);
-    return true;
-  });
-  if (!ok || !out) return;
+  const emitted = await withProgress(`Compiling ${path.basename(file)}`, () => tsc(config, client));
+  const out = emitted && outputFor(config, file, emitted);
+  if (!out) return;
   if (!fs.existsSync(out)) throw new UserError(`Compiled, but ${path.relative(client.dir, out)} wasn't written. Check outDir and rootDir in tsconfig.json.`);
   if (push) await vscode.commands.executeCommand("lantern.pushWebResource", vscode.Uri.file(out));
   else vscode.window.setStatusBarMessage(`$(check) Compiled ${path.basename(out)}`, 4000);

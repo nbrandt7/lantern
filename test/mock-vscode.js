@@ -20,6 +20,7 @@ const state = {
   terminals: [],
   statusBarItems: [],
   opened: [],
+  panelAnswers: [],
 };
 
 class Uri {
@@ -32,6 +33,7 @@ class Uri {
   }
   with(c) { return new Uri(c.scheme ?? this.scheme, c.path ?? this.path, c.query ?? this.query, c.fragment ?? this.fragment); }
   static file(p) { return new Uri("file", p); }
+  static joinPath(base, ...segments) { return base.with({ path: (base.scheme === "file" ? path : path.posix).join(base.path, ...segments) }); }
   static parse(s) {
     // scheme:[//authority]path[?query][#fragment], like the real Uri.parse.
     const m = /^([a-zA-Z][\w+.-]*):(\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(s);
@@ -74,26 +76,29 @@ class SnippetString {
   constructor(value = "") { this.value = value; }
   // Same escaping as VS Code: $, } and \ are special in snippets.
   appendText(text) { this.value += text.replace(/[$}\\]/g, "\\$&"); return this; }
+  appendPlaceholder(text, number) { this.tabstop = number ?? (this.tabstop ?? 0) + 1; this.value += "${" + this.tabstop + ":" + String(text).replace(/[$}\\]/g, "\\$&") + "}"; return this; }
 }
 
 const answer = (queue, fallback) => Promise.resolve(queue.length ? queue.shift() : fallback);
 const ev = () => () => ({ dispose() {} });
 
 /** A document with the position helpers real VS Code documents have. */
+/** text can be a function: a file's document reads the file each time, so it shows edits applied since (like VS Code's). */
 function textDocument(uri, text, languageId, isUntitled) {
+  const read = typeof text === "function" ? text : () => text;
   const offsetAt = (pos) => {
     if (!pos || pos.line === undefined) return 0;
-    const lines = text.split("\n");
+    const lines = read().split("\n");
     let o = 0;
     for (let i = 0; i < Math.min(pos.line, lines.length); i++) o += lines[i].length + 1;
     return o + (pos.character || 0);
   };
   const positionAt = (offset) => {
-    const before = text.slice(0, offset);
+    const before = read().slice(0, offset);
     const line = before.split("\n").length - 1;
     return { line, character: offset - (before.lastIndexOf("\n") + 1) };
   };
-  return { uri, languageId, isUntitled, getText: (range) => text, offsetAt, positionAt, lineCount: text.split("\n").length };
+  return { uri, languageId, isUntitled, getText: (range) => read(), offsetAt, positionAt, get lineCount() { return read().split("\n").length; } };
 }
 
 const window = {
@@ -164,18 +169,53 @@ const window = {
     state.viewProviders[id] = provider;
     return { dispose() {} };
   },
-  createWebviewPanel(viewType, title) {
+  /**
+   * A webview panel. Lantern's form panels (src/ui/panels) post "ready" when their
+   * page loads and get an "init" with the state; a scripted answer in
+   * state.panelAnswers, (initState, panel) => message | Promise<message>, plays the
+   * page: once the extension sets the HTML the mock posts "ready", and when the
+   * extension answers with "init" the answer's message (say { type: "submit", draft })
+   * is sent back as if the page had posted it. An answer can also return nothing and
+   * drive the page itself with panel.webview.send(...). Everything the extension
+   * posts is in panel.webview.posted.
+   */
+  createWebviewPanel(viewType, title, column, options) {
+    let html = "";
     const panel = {
-      viewType, title, revealed: 0,
+      viewType, title, column, options, revealed: 0, disposed: false, disposeListeners: [],
       webview: {
-        html: "", cspSource: "vscode-webview:",
+        cspSource: "vscode-webview:",
         listeners: [],
+        posted: [],
+        get html() { return html; },
+        set html(v) {
+          html = v;
+          if (state.panelAnswers && state.panelAnswers.length) setTimeout(() => void this.send({ type: "ready" }), 0);
+          // With nothing scripted, a test can have the tab closed straight away (Esc at a prompt, for a panel).
+          else if (state.closeUnansweredPanels) setTimeout(() => panel.dispose(), 0);
+        },
         onDidReceiveMessage(l) { this.listeners.push(l); return { dispose() {} }; },
-        postMessage() { return Promise.resolve(true); },
+        postMessage(m) {
+          this.posted.push(m);
+          if (m && m.type === "init" && state.panelAnswers && state.panelAnswers.length) {
+            const answer = state.panelAnswers.shift();
+            setTimeout(async () => {
+              try {
+                const reply = await answer(m.state, panel);
+                if (reply) await this.send(reply);
+              } catch (err) {
+                state.panelErrors = (state.panelErrors || []).concat(err);
+                panel.dispose(); // like closing the tab, so the command gets a cancel instead of hanging
+              }
+            }, 0);
+          }
+          return Promise.resolve(true);
+        },
         send(msg) { return Promise.all(this.listeners.map((l) => l(msg))); },
       },
       reveal() { this.revealed++; },
-      onDidDispose() { return { dispose() {} }; },
+      onDidDispose(l) { this.disposeListeners.push(l); return { dispose() {} }; },
+      dispose() { if (this.disposed) return; this.disposed = true; this.disposeListeners.forEach((l) => l()); },
     };
     state.panels = (state.panels || []).concat(panel);
     return panel;
@@ -251,7 +291,7 @@ const workspace = {
   onDidCloseTextDocument: ev(),
   onDidOpenTextDocument(l) { state.openListeners = (state.openListeners || []).concat(l); return { dispose() {} }; },
   onDidChangeWorkspaceFolders: ev(),
-  onDidChangeConfiguration: ev(),
+  onDidChangeConfiguration(l) { state.configListeners = (state.configListeners || []).concat(l); return { dispose() {} }; },
   textDocuments: [],
   openTextDocument(arg) {
     if (arg && arg.content !== undefined) {
@@ -263,7 +303,15 @@ const workspace = {
     const open = (state.createdDocs || []).find((d) => d.uri.toString() === arg.toString());
     if (open) return Promise.resolve(open);
     const provider = state.contentProviders[arg.scheme];
-    const text = arg.scheme === "file" ? require("fs").readFileSync(arg.fsPath, "utf8") : provider ? provider.provideTextDocumentContent(arg) : "";
+    let text = arg.scheme === "file" ? require("fs").readFileSync(arg.fsPath, "utf8") : provider ? provider.provideTextDocumentContent(arg) : "";
+    if (arg.scheme === "file") {
+      // Edits applied with workspace.applyEdit go to the file, so reading it again shows them.
+      let last = text;
+      text = () => {
+        try { last = require("fs").readFileSync(arg.fsPath, "utf8"); } catch { /* deleted since: keep the last text */ }
+        return last;
+      };
+    }
     const ext = (arg.path || "").split(".").pop();
     return Promise.resolve(textDocument(arg, text, { js: "javascript", ts: "typescript", sql: "sql", xml: "xml", cs: "csharp", md: "markdown" }[ext] || "plaintext", false));
   },
@@ -301,7 +349,12 @@ module.exports = {
         dispose() {},
       };
     },
-    registerCodeLensProvider(sel, p) { state.codeLensSelector = sel; state.codeLensProviders.push(p); return { dispose() {} }; },
+    registerCodeLensProvider(sel, p) {
+      state.codeLensSelector = sel;
+      state.codeLensProviders.push(p);
+      state.codeLensSelectors = (state.codeLensSelectors || new Map()).set(p, sel);
+      return { dispose() {} };
+    },
     registerCompletionItemProvider(sel, p, ...triggers) {
       state.completionProviders = (state.completionProviders || []).concat({ sel, p, triggers });
       if (!state.completionProvider) { state.completionProvider = p; state.completionTriggers = triggers; }

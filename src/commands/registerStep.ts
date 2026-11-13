@@ -1,17 +1,14 @@
 import * as vscode from "vscode";
 import { Client } from "../core/clients";
 import { MetadataService } from "../core/metadata";
+import { imageMessageProperty } from "../core/stepEditing";
 import { dataverseFor } from "../ui/auth";
 import { confirmProtected, reportError, resolveClient, withProgress } from "../ui/context";
-import { pickTable } from "./metadata";
 import { forgetRegisteredSteps } from "../ui/editor";
+import { openStepPanel, StepPanelDraft, targetMessage } from "../ui/panels/stepPanel";
+import { columnChoices, userChoices } from "./editStep";
 
 const COMMON_MESSAGES = ["Create", "Update", "Delete", "Assign", "SetState", "SetStateDynamicEntity", "Retrieve", "RetrieveMultiple", "Associate", "Disassociate", "QualifyLead", "Merge"];
-const STAGES = [
-  { label: "Pre-validation", description: "before security checks, outside the transaction", value: 10 },
-  { label: "Pre-operation", description: "inside the transaction, before the change is saved; change Target here", value: 20 },
-  { label: "Post-operation", description: "after the change is saved", value: 40 },
-];
 
 export interface StepRequest {
   pluginTypeId: string;
@@ -23,8 +20,17 @@ export interface StepRequest {
   stage: number;
   mode: 0 | 1;
   filtering: string[];
-  images: Array<{ kind: "Pre" | "Post"; alias: string; attributes: string[] }>;
+  images: Array<{ kind: "Pre" | "Post"; alias: string; attributes: string[]; /** 0 pre, 1 post, 2 both; the kind's when missing. */ type?: number }>;
   solution?: string;
+  /** "<Class>: <message> of <table>" when missing. */
+  name?: string;
+  description?: string;
+  /** 1 when missing. */
+  rank?: number;
+  configuration?: string;
+  runAsId?: string;
+  /** Asynchronous steps delete their system job when missing. */
+  deleteJobOnSuccess?: boolean;
 }
 
 /** Registers a step and its images. Returns the new step's ID. */
@@ -33,17 +39,20 @@ export async function registerStep(client: Client, req: StepRequest): Promise<st
   const headers: Record<string, string> = req.solution ? { "MSCRM.SolutionUniqueName": req.solution } : {};
   const shortType = req.typeName.split(".").pop();
   const body: Record<string, unknown> = {
-    name: `${shortType}: ${req.message}${req.table ? ` of ${req.table}` : ""}`,
+    name: req.name?.trim() || `${shortType}: ${req.message}${req.table ? ` of ${req.table}` : ""}`,
     stage: req.stage,
     mode: req.mode,
-    rank: 1,
+    rank: req.rank ?? 1,
     supporteddeployment: 0,
-    asyncautodelete: req.mode === 1,
+    asyncautodelete: req.mode === 1 && (req.deleteJobOnSuccess ?? true),
     "eventhandler_plugintype@odata.bind": `/plugintypes(${req.pluginTypeId})`,
     "sdkmessageid@odata.bind": `/sdkmessages(${req.messageId})`,
   };
   if (req.filterId) body["sdkmessagefilterid@odata.bind"] = `/sdkmessagefilters(${req.filterId})`;
   if (req.filtering.length) body.filteringattributes = req.filtering.join(",");
+  if (req.description) body.description = req.description;
+  if (req.configuration) body.configuration = req.configuration;
+  if (req.runAsId) body["impersonatinguserid@odata.bind"] = `/systemusers(${req.runAsId})`;
   const stepId = await dv.create("sdkmessageprocessingsteps", body, headers);
   for (const img of req.images) {
     await dv.create(
@@ -51,9 +60,9 @@ export async function registerStep(client: Client, req: StepRequest): Promise<st
       {
         name: img.alias,
         entityalias: img.alias,
-        imagetype: img.kind === "Pre" ? 0 : 1,
-        // Create's post-image comes from the new record's Id; everything else from Target.
-        messagepropertyname: req.message === "Create" ? "Id" : "Target",
+        imagetype: img.type ?? (img.kind === "Pre" ? 0 : 1),
+        // Create's post-image comes from the new record's Id, SetState's images from EntityMoniker, everything else from Target.
+        messagepropertyname: imageMessageProperty(req.message),
         ...(img.attributes.length ? { attributes: img.attributes.join(",") } : {}),
         "sdkmessageprocessingstepid@odata.bind": `/sdkmessageprocessingsteps(${stepId})`,
       },
@@ -75,132 +84,109 @@ export function registerStepCommands(serviceFor: (c: Client) => MetadataService,
   ];
 }
 
-/** Message, table, stage, mode, filtering columns, and images, with columns picked from metadata. */
+/** One page for the plug-in class, message, table, stage, mode, filtering columns and images, with columns picked from metadata. */
 async function guided(arg: unknown, serviceFor: (c: Client) => MetadataService, onDone: (client: Client) => void): Promise<void> {
-  const node = arg as { client?: Client; assembly?: string; typeName?: string } | undefined;
+  const node = arg as { client?: Client; assembly?: string; typeName?: string; typeId?: string; status?: { type?: { plugintypeid: string } } } | undefined;
   const client = await resolveClient(arg);
   if (!client?.config.org) return;
   const dv = dataverseFor(client);
+  const service = serviceFor(client);
+  const env = client.envName || client.orgHost;
 
-  const types = await withProgress("Loading plug-in types", () =>
-    dv.getAll<{ plugintypeid: string; typename: string; assemblyname: string }>(
+  const loaded = await withProgress("Loading plug-in types and tables", async () => ({
+    types: await dv.getAll<{ plugintypeid: string; typename: string; assemblyname: string }>(
       "plugintypes?$select=plugintypeid,typename,assemblyname&$filter=customizationlevel eq 1&$orderby=typename"
-    )
-  );
-  if (!types) return;
-  const inAssembly = node?.assembly ? types.filter((t) => t.assemblyname === node.assembly) : types;
+    ),
+    tables: await service.tables(),
+    inSolution: new Set(await service.solutionTables(client.config.solutions).catch(() => [] as string[])),
+  }));
+  if (!loaded) return;
+  const inAssembly = node?.assembly ? loaded.types.filter((t) => t.assemblyname === node.assembly) : loaded.types;
   if (!inAssembly.length) {
     void vscode.window.showWarningMessage("No custom plug-in types are registered. Push the assembly first (Build and Push Plug-in).");
     return;
   }
-  const items = inAssembly.map((t) => ({ label: t.typename.split(".").pop() ?? t.typename, description: t.typename, detail: t.assemblyname, t }));
-  // From a class's CodeLens: that class, if it's registered (pushed) yet.
-  const known = node?.typeName ? items.find((i) => i.t.typename === node.typeName || i.label === node.typeName) : undefined;
+  // From a class's CodeLens: that class, if it's registered (pushed) yet. By ID when the caller knows it (Build and Push, the
+  // tree): two registered versions of an assembly have types with the same name, and only one is the class that was meant.
+  const typeId = (node?.typeId ?? node?.status?.type?.plugintypeid)?.toLowerCase();
+  const known =
+    (typeId ? inAssembly.find((t) => t.plugintypeid.toLowerCase() === typeId) : undefined) ??
+    (node?.typeName ? inAssembly.find((t) => t.typename === node.typeName || t.typename.split(".").pop() === node.typeName) : undefined);
   if (node?.typeName && !known) {
     void vscode.window.showWarningMessage(`${node.typeName} isn't registered in ${client.orgHost} yet. Build and push the plug-in first.`);
     return;
   }
-  const type = known ?? (await vscode.window.showQuickPick(items, { placeHolder: "Which plug-in class should the step run?" }));
-  if (!type) return;
 
-  let message = await vscode.window.showQuickPick([...COMMON_MESSAGES, "Other…"], { placeHolder: "Which message (event)?" });
-  if (!message) return;
-  if (message === "Other…") {
-    message = await vscode.window.showInputBox({ prompt: "Message name, e.g. a custom API or action name" });
-    if (!message) return;
-  }
-  const messages = await dv.getAll<{ sdkmessageid: string }>(`sdkmessages?$select=sdkmessageid&$filter=name eq '${message.replace(/'/g, "''")}'`);
-  if (!messages[0]) {
-    void vscode.window.showWarningMessage(`There's no message named ${message}.`);
-    return;
-  }
-
-  const service = serviceFor(client);
-  const table = await pickTable(client, service, `${message} of which table? (Esc for none)`);
-  let filterId: string | undefined;
-  if (table) {
-    const filters = await dv.getAll<{ sdkmessagefilterid: string }>(
-      `sdkmessagefilters?$select=sdkmessagefilterid&$filter=_sdkmessageid_value eq ${messages[0].sdkmessageid} and primaryobjecttypecode eq '${table.logicalName}'`
-    );
-    if (!filters[0]) {
-      void vscode.window.showWarningMessage(`${message} isn't available for ${table.logicalName}.`);
-      return;
+  const lookups = { messageId: "", filterId: undefined as string | undefined };
+  const result = await openStepPanel(
+    "Register Plug-in Step",
+    {
+      subtitle: `A new step in ${env}${node?.assembly ? ` for ${node.assembly}` : ""}`,
+      mode: "register",
+      message: "",
+      table: "",
+      typeName: "",
+      classes: inAssembly.map((t) => ({ id: t.plugintypeid, typeName: t.typename, assembly: t.assemblyname })),
+      messages: COMMON_MESSAGES,
+      tables: loaded.tables
+        .map((t) => ({ id: t.logicalName, label: t.displayName || t.logicalName, meta: `${t.logicalName}${loaded.inSolution.has(t.logicalName) ? " · in your solution" : ""}` }))
+        .sort((a, b) => Number(loaded.inSolution.has(b.id)) - Number(loaded.inSolution.has(a.id)) || a.label.localeCompare(b.label)),
+      solutions: client.config.solutions,
+      draft: {
+        step: { name: "", description: "", stage: 40, mode: 0, rank: 1, filtering: [], deleteJobOnSuccess: true, configuration: "", secureConfig: { stored: false }, images: [] },
+        target: { pluginTypeId: known?.plugintypeid ?? "", typeName: known?.typename ?? "", message: "", table: "", solution: client.config.solutions.length === 1 ? client.config.solutions[0] : "", nameAuto: true },
+      },
+    },
+    undefined,
+    {
+      columns: (table) => columnChoices(service, table),
+      users: (text) => userChoices(client, text),
+      submit: async (d: StepPanelDraft) => {
+        const t = d.target!;
+        const message = targetMessage(t);
+        const messages = await dv.getAll<{ sdkmessageid: string }>(`sdkmessages?$select=sdkmessageid&$filter=name eq '${message.replace(/'/g, "''")}'`);
+        if (!messages[0]) return `There's no message named ${message}.`;
+        lookups.messageId = messages[0].sdkmessageid;
+        lookups.filterId = undefined;
+        if (t.table) {
+          const filters = await dv.getAll<{ sdkmessagefilterid: string }>(
+            `sdkmessagefilters?$select=sdkmessagefilterid&$filter=_sdkmessageid_value eq ${messages[0].sdkmessageid} and primaryobjecttypecode eq '${t.table.replace(/'/g, "''")}'`
+          );
+          if (!filters[0]) return `${message} isn't available for ${t.table}.`;
+          lookups.filterId = filters[0].sdkmessagefilterid;
+        }
+        return undefined;
+      },
     }
-    filterId = filters[0].sdkmessagefilterid;
-  }
-
-  const stage = await vscode.window.showQuickPick(STAGES, { placeHolder: "When should it run?" });
-  if (!stage) return;
-  let mode: 0 | 1 = 0;
-  if (stage.value === 40) {
-    const m = await vscode.window.showQuickPick(
-      [
-        { label: "Synchronous", description: "the user waits; errors block the save", value: 0 as const },
-        { label: "Asynchronous", description: "runs in the background as a system job", value: 1 as const },
-      ],
-      { placeHolder: "Run synchronously or in the background?" }
-    );
-    if (!m) return;
-    mode = m.value;
-  }
-
-  const columns = table ? (await service.columns(table.logicalName)).filter((c) => !c.attributeOf && c.readable !== false) : [];
-  let filtering: string[] = [];
-  if (message === "Update" && table) {
-    const picks = await vscode.window.showQuickPick(
-      columns.map((c) => ({ label: c.displayName || c.logicalName, description: c.logicalName })),
-      { canPickMany: true, placeHolder: "Run only when these columns change (pick none to run on any change)", matchOnDescription: true }
-    );
-    if (picks === undefined) return;
-    filtering = picks.map((p: { description: string }) => p.description);
-  }
-
-  const images: StepRequest["images"] = [];
-  if (table && (message !== "Create" || stage.value === 40)) {
-    const kinds = await vscode.window.showQuickPick(
-      [
-        ...(message !== "Create" ? [{ label: "Pre-image", description: "the row as it was before", image: "Pre" as const }] : []),
-        ...(stage.value === 40 && message !== "Delete" ? [{ label: "Post-image", description: "the row as it is after", image: "Post" as const }] : []),
-      ],
-      { canPickMany: true, placeHolder: "Add images? (pick none to skip)" }
-    );
-    if (kinds === undefined) return;
-    for (const k of kinds) {
-      const alias = await vscode.window.showInputBox({ prompt: `${k.image}-image alias (what your code reads)`, value: `${k.image}Image` });
-      if (!alias) return;
-      const cols = await vscode.window.showQuickPick(
-        columns.map((c) => ({ label: c.displayName || c.logicalName, description: c.logicalName })),
-        { canPickMany: true, placeHolder: `Columns in the ${k.image.toLowerCase()}-image (pick none for all columns)`, matchOnDescription: true }
-      );
-      if (cols === undefined) return;
-      images.push({ kind: k.image, alias, attributes: cols.map((c: { description: string }) => c.description) });
-    }
-  }
-
-  let solution: string | undefined;
-  if (client.config.solutions.length) {
-    const s = await vscode.window.showQuickPick([...client.config.solutions, "(don't add to a solution)"], { placeHolder: "Add the step to which solution?" });
-    if (s === undefined) return;
-    solution = s.startsWith("(") ? undefined : s;
-  }
-
-  const summary = `${type.label}: ${message}${table ? ` of ${table.logicalName}` : ""}, ${stage.label}, ${mode ? "asynchronous" : "synchronous"}` +
-    `${filtering.length ? `, when ${filtering.join(", ")} change` : ""}${images.length ? `, ${images.map((i) => `${i.kind.toLowerCase()}-image ${i.alias}`).join(" and ")}` : ""}`;
-  const ok = await vscode.window.showInformationMessage(`Register ${summary}?`, { modal: true }, "Register Step");
-  if (ok !== "Register Step" || !(await confirmProtected(client, "Register a plug-in step"))) return;
+  );
+  if (!result) return;
+  const t = result.target!;
+  const d = result.step;
+  const message = targetMessage(t);
+  const table = t.table || undefined;
+  const live = d.images.filter((i) => !i.removed);
+  const summary = `${t.typeName.split(".").pop()}: ${message}${table ? ` of ${table}` : ""}, ${d.stage === 10 ? "pre-validation" : d.stage === 20 ? "pre-operation" : "post-operation"}, ${d.mode ? "asynchronous" : "synchronous"}` +
+    `${d.filtering.length ? `, when ${d.filtering.join(", ")} change` : ""}${live.length ? `, ${live.map((i) => `${i.type === 1 ? "post" : i.type === 2 ? "pre- and post" : "pre"}-image ${i.alias.trim()}`).join(" and ")}` : ""}`;
+  if (!(await confirmProtected(client, "Register a plug-in step"))) return;
   const id = await withProgress("Registering the step", () =>
     registerStep(client, {
-      pluginTypeId: type.t.plugintypeid,
-      typeName: type.t.typename,
-      messageId: messages[0].sdkmessageid,
+      pluginTypeId: t.pluginTypeId,
+      typeName: t.typeName,
+      messageId: lookups.messageId,
       message,
-      filterId,
-      table: table?.logicalName,
-      stage: stage.value,
-      mode,
-      filtering,
-      images,
-      solution,
+      filterId: lookups.filterId,
+      table,
+      stage: d.stage,
+      mode: d.mode === 1 ? 1 : 0,
+      filtering: message.toLowerCase() === "update" && table ? d.filtering : [],
+      images: live.map((i) => ({ kind: i.type === 1 ? ("Post" as const) : ("Pre" as const), alias: i.alias.trim(), attributes: i.columns, type: i.type })),
+      solution: t.solution || undefined,
+      name: d.name,
+      description: d.description.trim() || undefined,
+      rank: d.rank,
+      configuration: d.configuration || undefined,
+      runAsId: d.runAs?.id,
+      deleteJobOnSuccess: d.deleteJobOnSuccess,
     })
   );
   if (!id) return;

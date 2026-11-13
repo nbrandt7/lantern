@@ -64,9 +64,9 @@ export function findScriptProblems(
     while ((m = tabRe.exec(text))) {
       const tab = m[2];
       const section = m[4];
-      const tabStart = m.index + m[0].indexOf(tab);
       if (!tabs.has(tab)) {
-        problems.push({ start: tabStart, end: tabStart + tab.length, severity: "warning", message: `No tab named ${tab} on any ${table} form.` });
+        // From the "(" on: a tab called "tab" is also in "tabs".
+        problems.push({ ...nameRange(m, tab), severity: "warning", message: `No tab named ${tab} on any ${table} form.` });
       } else if (section && !tabs.get(tab)!.has(section)) {
         const s = m.index + m[0].lastIndexOf(section);
         problems.push({ start: s, end: s + section.length, severity: "warning", message: `Tab ${tab} has no section named ${section} on any ${table} form.` });

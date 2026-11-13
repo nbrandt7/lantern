@@ -156,7 +156,8 @@ export function outlineJs(source: string): JsFunction[] {
     { re: /((?:[\w$]+\.)*)([\w$]+)\s*=\s*(?:async\s+)?function\b[^(]*\(/g, prefix: 1, name: 2 },
     { re: /([\w$]+)\s*:\s*(?:async\s+)?function\b[^(]*\(/g, name: 1 },
     { re: /((?:[\w$]+\.)*)([\w$]+)\s*[=:]\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>/g, prefix: 1, name: 2, arrow: true },
-    { re: /^[ \t]*(?:async\s+|static\s+)*([\w$]+)\s*\([^)]*\)\s*\{/gm, name: 1 },
+    // Method shorthand. Parameters without parentheses, so a call taking a callback, setTimeout(function () {, isn't one.
+    { re: /^[ \t]*(?:async\s+|static\s+)*([\w$]+)\s*\([^()]*\)\s*\{/gm, name: 1 },
   ];
   for (const p of patterns) {
     let m: RegExpExecArray | null;
@@ -279,7 +280,8 @@ export function analyzeJsFunction(source: string, fn: JsFunction, outline: JsFun
     const call = new RegExp(`(?:^|[^\\w$.])(?:[\\w$]+\\.)*${esc(other.name)}\\s*\\(`, "g");
     const hit = call.exec(body);
     // A definition of the same name inside this body isn't a call.
-    if (hit && !(other.bodyStart > fn.bodyStart && other.bodyEnd <= fn.bodyEnd)) out.calls.push({ name: other.name, line: at(hit.index) });
+    // The line of the name: the match can start with the line break before it.
+    if (hit && !(other.bodyStart > fn.bodyStart && other.bodyEnd <= fn.bodyEnd)) out.calls.push({ name: other.name, line: at(hit.index + hit[0].search(/[\w$]/)) });
   }
   return out;
 }

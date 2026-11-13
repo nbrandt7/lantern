@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { Client, isClientFolderName, normalizeOrg, slugify, writeJsconfig } from "../core/clients";
+import { Client, excludeLocally, isClientFolderName, normalizeOrg, slugify, writeJsconfig } from "../core/clients";
 import { UserError } from "../core/errors";
 import { findFiles, isInside, writeJson } from "../core/files";
 import { connectRepo, repoNameFromUrl } from "../core/git";
@@ -73,7 +73,7 @@ export async function newClient(onDone: () => void): Promise<void> {
 
   const org = await vscode.window.showInputBox({
     title: `${title} (3/4)`,
-    prompt: "Dataverse org URL. Optional; you can add it to .lantern/config.json later.",
+    prompt: "Dataverse org URL. Optional; you can add it to the tenant configuration later.",
     placeHolder: "https://contoso.crm.dynamics.com",
     ignoreFocusOut: true,
   });
@@ -98,6 +98,8 @@ export async function newClient(onDone: () => void): Promise<void> {
       fs.mkdirSync(dir, { recursive: true });
     }
     if (settings().createJsconfig && !fs.existsSync(path.join(dir, "jsconfig.json"))) writeJsconfig(dir, "generic");
+    // jsconfig.json and Lantern's other local files never show as changes in the client's repo.
+    excludeLocally(dir);
     const c = addTenant(slugify(name), {
       folder: tenantMode() === "folder" ? path.relative(root, dir) : dir,
       org: normalizeOrg(org),
@@ -120,6 +122,7 @@ export async function configureFolder(arg: unknown, onDone: () => void): Promise
   const root = workspaceRoots().find((folder) => isInside(dir, folder));
   if (!root) throw new UserError("Open the project in a workspace folder first.");
   if (settings().createJsconfig && !fs.existsSync(path.join(dir, "jsconfig.json"))) writeJsconfig(dir, "generic");
+  excludeLocally(dir);
   const client = addTenant(path.basename(dir), { folder: tenantMode() === "folder" ? path.relative(root, dir) || "." : dir }, root);
   await restoreDotnet(client, write);
   onDone();

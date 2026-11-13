@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { UserError } from "./errors";
 import { isDirectory, readJson, writeJson } from "./files";
 
 // ---------- where client settings live ----------
@@ -25,9 +26,12 @@ const folderKey = (dir: string) => {
   return `${path.basename(resolved).replace(/[^\w.-]+/g, "-")}-${createHash("sha1").update(normalized).digest("hex").slice(0, 10)}`;
 };
 
+/** The file name a folder's settings have in the store. */
+export const storedConfigName = (dir: string) => `${folderKey(dir)}.lantern-client.json`;
+
 /** Where a folder's settings are kept outside it, when the store is in use. */
 export function storedConfigPath(dir: string): string | undefined {
-  return storeDir ? path.join(storeDir, `${folderKey(dir)}.lantern-client.json`) : undefined;
+  return storeDir ? path.join(storeDir, storedConfigName(dir)) : undefined;
 }
 
 /** Storage modes are independent: never inspect or import the other mode's config. */
@@ -113,7 +117,7 @@ export const CLIENT_FILE = ".lantern/config.json";
 const RESERVED = new Set(["node_modules", "scripts", "tools", "out", "dist"]);
 
 /** Files the tooling adds to a client folder, kept out of the client's repo via .git/info/exclude. */
-const LOCAL_FILES = ["jsconfig.json", ".lantern/config.json", "typings/", "typings.tmp/", ".pull-backup/", "exports/"];
+const LOCAL_FILES = ["jsconfig.json", ".lantern/config.json", ".lantern/profiles/", "typings/", "typings.tmp/", ".pull-backup/", "exports/"];
 
 export interface EnvironmentConfig {
   /** Short label like DEV, TEST, PROD. */
@@ -159,7 +163,12 @@ export interface ClientConfig {
   scriptNamespace: string;
   /** Folders whose relative paths are web resource names, e.g. ["src/WebResources"]. Optional. */
   webResourceRoots: string[];
-  earlyBound: { outDir: string; namespace: string; entities: string[] };
+  /** What Build and Push deploys when a project builds both a .dll and a .nupkg and the org has neither yet. "" asks. */
+  pluginDeploy: "" | "assembly" | "package";
+  /** C# classes for plug-ins: output folder, namespace, and the tables picked last time. */
+  csharpClasses: { outDir: string; namespace: string; entities: string[] };
+  /** JavaScript or TypeScript table models for form scripts: folder, language, global namespace (Acme.Models). */
+  scriptModels: { outDir: string; language: "" | "js" | "ts"; namespace: string };
   /** Plug-in assembly or package IDs by assembly name, when they can't be found in the solution. */
   plugins: Record<string, string>;
   /** Table each script works with, by path relative to the client folder, for column completions. */
@@ -255,6 +264,8 @@ export class Client {
     const s = this.stored;
     for (const key of Object.keys(c) as Array<keyof ClientConfig>) {
       if (key === "org" || key === "account" || key === "tenant" || key === "appId") continue;
+      // In a tenant list the environment in use is this window's; saving must not make it the default.
+      if (key === "environment" && this.tenantFile) continue;
       (s as unknown as Record<string, unknown>)[key] = c[key];
     }
     const env = this.activeEnvironment;
@@ -279,9 +290,9 @@ export class Client {
     if (this.tenantFile) {
       const document = readTenantDocument(this.tenantFile);
       const index = document.tenants.findIndex((tenant) => tenant.name === this.name);
-      const entry = serializeTenant(this.name, s);
-      if (index >= 0) document.tenants[index] = entry;
-      else document.tenants.push(entry);
+      // Renamed or removed since (in another window, or by hand): writing it back would resurrect it.
+      if (index < 0) throw new UserError(`${this.name} isn't in ${this.tenantFile} anymore, so the change wasn't saved. Select the tenant again, then retry.`);
+      document.tenants[index] = serializeTenant(this.name, s);
       writeJson(this.tenantFile, document);
     } else {
       writeJson(this.configFile, s);
@@ -354,7 +365,10 @@ export function readTenantDocument(file: string): TenantDocument {
 
 export function tenantsInFile(file: string, dir: string): Client[] {
   const document = readTenantDocument(file);
-  return document.tenants.map(({ name, ...raw }) => {
+  // A tenant is saved by name, so a repeated name (a copied block not renamed yet) would overwrite
+  // the first entry. Only the first is offered, matching which one save() and reload() find.
+  const first = document.tenants.filter((entry, index) => document.tenants.findIndex((other) => other.name === entry.name) === index);
+  return first.map(({ name, ...raw }) => {
     const config = normalizeConfig(raw);
     return new Client(name, config.folder ? path.resolve(dir, config.folder) : dir, config, undefined, file);
   }
@@ -386,7 +400,8 @@ export function toList(value: unknown): string[] {
 }
 
 export function normalizeConfig(raw: Partial<ClientConfig> & { url?: string }): ClientConfig {
-  const eb: Partial<ClientConfig["earlyBound"]> = raw.earlyBound ?? {};
+  // "earlyBound" is the old name of csharpClasses: still read, written under the new name.
+  const eb: Partial<ClientConfig["csharpClasses"]> = raw.csharpClasses ?? (raw as { earlyBound?: Partial<ClientConfig["csharpClasses"]> }).earlyBound ?? {};
   const environments = (Array.isArray(raw.environments) ? raw.environments : [])
     .filter((e) => e && e.name && e.org)
     .map((e) => ({ ...e, name: String(e.name).trim(), org: normalizeOrg(String(e.org)) }));
@@ -406,7 +421,13 @@ export function normalizeConfig(raw: Partial<ClientConfig> & { url?: string }): 
     username: raw.username ?? "",
     scriptNamespace: raw.scriptNamespace ?? "",
     webResourceRoots: toList(raw.webResourceRoots),
-    earlyBound: { outDir: eb.outDir ?? "", namespace: eb.namespace ?? "", entities: toList(eb.entities) },
+    pluginDeploy: raw.pluginDeploy === "assembly" || raw.pluginDeploy === "package" ? raw.pluginDeploy : "",
+    csharpClasses: { outDir: eb.outDir ?? "", namespace: eb.namespace ?? "", entities: toList(eb.entities) },
+    scriptModels: {
+      outDir: raw.scriptModels?.outDir ?? "",
+      language: raw.scriptModels?.language === "ts" || raw.scriptModels?.language === "js" ? raw.scriptModels.language : "",
+      namespace: raw.scriptModels?.namespace ?? "",
+    },
     plugins: raw.plugins ?? {},
     fileTables: raw.fileTables ?? {},
   };

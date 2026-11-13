@@ -5,7 +5,11 @@
  *   SELECT [DISTINCT] [TOP n] *, t.*, col [AS alias], COUNT(*), COUNT([DISTINCT] col), SUM/AVG/MIN/MAX(col)
  *   FROM table [AS] [alias]
  *   [INNER | LEFT [OUTER]] JOIN table [AS] alias ON a.col = b.col   (any number, nestable)
- *   WHERE  =, <>, !=, <, <=, >, >=, [NOT] LIKE, [NOT] IN (...), IS [NOT] NULL, [NOT] BETWEEN, AND, OR, NOT, ( )
+ *   WHERE  =, <>, !=, <, <=, >, >=, [NOT] LIKE, [NOT] IN (...), IS [NOT] NULL, [NOT] BETWEEN, AND, OR, NOT, ( ),
+ *          [NOT] EXISTS (SELECT ... FROM t [alias] [JOIN ...] WHERE t.col = outer.col [AND ...]),
+ *          col [NOT] IN (SELECT col FROM t [alias] [JOIN ...] [WHERE ...])
+ *          Subqueries become <link-entity link-type="any" / "not any"> inside the filter, so they compose with AND/OR/NOT,
+ *          nest, and can be linked to the FROM table or (with AND) to an INNER JOINed table.
  *   GROUP BY col, ...
  *   ORDER BY col | alias [ASC | DESC], ...
  *
@@ -146,9 +150,18 @@ export type Literal = string | number | null;
 export type Cond =
   | { kind: "and" | "or"; items: Cond[] }
   | { kind: "not"; item: Cond }
-  | { kind: "cmp"; ref: ColumnRef; op: string; values: Literal[] };
+  | { kind: "cmp"; ref: ColumnRef; op: string; values: Literal[] }
+  /** Two columns compared. Only parsed inside a subquery, where one such = links the subquery's table to the outer query. */
+  | { kind: "colcmp"; left: ColumnRef; op: string; right: ColumnRef; pos: number }
+  /**
+   * [NOT] EXISTS (SELECT ... FROM table [alias] [WHERE ...]) or outer [NOT] IN (SELECT inner FROM table [alias] [WHERE ...]).
+   * For IN, outer and inner are set here; for EXISTS they come from the linking condition in the subquery's WHERE.
+   */
+  | { kind: "sub"; negated: boolean; outer?: ColumnRef; inner?: ColumnRef; table: string; alias: string; joins: Join[]; where?: Cond; pos: number };
 
-interface Join {
+export type SubCond = Extract<Cond, { kind: "sub" }>;
+
+export interface Join {
   outer: boolean;
   table: string;
   alias: string;
@@ -171,7 +184,7 @@ export interface SelectQuery {
 
 export interface Having {
   /** An aggregate like COUNT(*) / SUM(col), or a select alias like "count". */
-  target: { fn?: "count" | "countcolumn" | "sum" | "avg" | "min" | "max"; column?: string; alias?: string };
+  target: { fn?: "count" | "countcolumn" | "sum" | "avg" | "min" | "max"; column?: string; table?: string; distinct?: boolean; alias?: string };
   op: "eq" | "ne" | "lt" | "le" | "gt" | "ge";
   value: number;
 }
@@ -180,12 +193,14 @@ export interface Having {
 
 const RESERVED = new Set([
   "SELECT", "DISTINCT", "TOP", "FROM", "AS", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON", "WHERE",
-  "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "BETWEEN", "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING",
-  "UNION", "INSERT", "UPDATE", "DELETE", "INTO", "VALUES", "SET",
+  "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "BETWEEN", "EXISTS", "GROUP", "BY", "ORDER", "ASC", "DESC", "HAVING",
+  "UNION", "INSERT", "UPDATE", "DELETE", "INTO", "VALUES", "SET", "OPTION",
 ]);
 
 class Parser {
   private i = 0;
+  /** > 0 while parsing a subquery, where column = column conditions are allowed (one of them links it to the outer query). */
+  private subDepth = 0;
   constructor(private readonly toks: Tok[]) {}
 
   private get t(): Tok {
@@ -249,12 +264,13 @@ class Parser {
         this.expectPunct(")");
         rows.push(row);
       } while (this.isPunct(","));
+      const hints = this.hints();
       this.end();
-      return { kind: "insert", table, alias: table, columns, rows };
+      return { kind: "insert", table, alias: table, columns, rows, ...hints };
     }
     if (this.accept("UPDATE")) {
-      const table = this.identifier("table");
-      const alias = (this.tableAlias() ?? table).toLowerCase();
+      const target = this.identifier("table");
+      const targetAlias = this.tableAlias();
       this.expect("SET");
       const sets: Array<{ column: string; value: Literal }> = [];
       do {
@@ -264,23 +280,75 @@ class Parser {
         this.i++;
         sets.push({ column: ref.column, value: this.literal() });
       } while (this.isPunct(","));
+      const { table, alias } = this.writeTarget("UPDATE", target, targetAlias);
       const where = this.accept("WHERE") ? this.orCond() : undefined;
+      const hints = this.hints();
       this.end();
-      return { kind: "update", table: table.toLowerCase(), alias, sets, where };
+      return { kind: "update", table, alias, sets, where, ...hints };
     }
     if (this.accept("DELETE")) {
-      this.accept("FROM");
-      const table = this.identifier("table");
-      const alias = (this.tableAlias() ?? table).toLowerCase();
+      const direct = this.accept("FROM");
+      const target = this.identifier("table");
+      const targetAlias = this.tableAlias();
+      const { table, alias } = direct ? { table: target.toLowerCase(), alias: (targetAlias ?? target).toLowerCase() } : this.writeTarget("DELETE", target, targetAlias);
       const where = this.accept("WHERE") ? this.orCond() : undefined;
+      const hints = this.hints();
       this.end();
-      return { kind: "delete", table: table.toLowerCase(), alias, where };
+      return { kind: "delete", table, alias, where, ...hints };
     }
     return { kind: "select", query: this.parse() };
   }
 
+  /**
+   * The table an UPDATE or DELETE changes: "UPDATE table [alias]", or SQL Server's "UPDATE alias ... FROM table alias"
+   * (and "DELETE alias FROM table alias"), where the name before SET is the alias of the one table in FROM.
+   */
+  private writeTarget(verb: string, target: string, targetAlias: string | undefined): { table: string; alias: string } {
+    if (!this.accept("FROM")) return { table: target.toLowerCase(), alias: (targetAlias ?? target).toLowerCase() };
+    const pos = this.t.pos;
+    const fromTable = this.identifier("table");
+    const fromAlias = (this.tableAlias() ?? fromTable).toLowerCase();
+    if (["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS"].some((w) => this.is(w))) {
+      throw new SqlError(`${verb} ... FROM takes one table. For conditions on related rows, use WHERE EXISTS (SELECT ...) or IN (SELECT ...).`, this.t.pos);
+    }
+    const name = target.toLowerCase();
+    if (targetAlias || (name !== fromTable.toLowerCase() && name !== fromAlias)) {
+      const named = `${verb} ${target}${targetAlias ? ` ${targetAlias}` : ""} doesn't match FROM ${fromTable}${fromAlias !== fromTable.toLowerCase() ? ` ${fromAlias}` : ""}.`;
+      const fix =
+        fromAlias === fromTable.toLowerCase() && !targetAlias
+          ? `Write FROM ${fromTable} ${target} so ${target} is its alias, or ${verb} ${fromTable} ... FROM ${fromTable}.`
+          : `Write ${verb} ${fromAlias} ... FROM ${fromTable} ${fromAlias}, or leave FROM out.`;
+      throw new SqlError(`${named} ${fix}`, pos);
+    }
+    return { table: fromTable.toLowerCase(), alias: fromAlias };
+  }
+
+  /**
+   * SQL Server-style OPTION (...) at the end of a write statement: BYPASS PLUGINS, BYPASS SYNC PLUGINS,
+   * BYPASS ASYNC PLUGINS and BYPASS FLOWS, comma-separated. Absent, the result has no hints key.
+   */
+  private hints(): { hints?: WriteHint[] } {
+    if (!this.accept("OPTION")) return {};
+    this.expectPunct("(");
+    const hints: WriteHint[] = [];
+    do {
+      if (this.isPunct(",")) this.i++;
+      if (!this.accept("BYPASS")) throw this.error("OPTION takes BYPASS PLUGINS, BYPASS SYNC PLUGINS, BYPASS ASYNC PLUGINS or BYPASS FLOWS, not");
+      if (this.accept("PLUGINS")) hints.push("bypass plugins");
+      else if (this.accept("FLOWS")) hints.push("bypass flows");
+      else if (this.accept("SYNC") || this.accept("ASYNC")) {
+        const which = this.toks[this.i - 1].upper === "SYNC" ? "bypass sync plugins" : "bypass async plugins";
+        this.expect("PLUGINS");
+        hints.push(which);
+      } else throw this.error("BYPASS takes PLUGINS, SYNC PLUGINS, ASYNC PLUGINS or FLOWS, not");
+    } while (this.isPunct(","));
+    this.expectPunct(")");
+    return { hints: [...new Set(hints)] };
+  }
+
   private end(): void {
     if (this.isPunct(";")) this.i++;
+    if (this.is("OPTION")) throw this.error("OPTION (BYPASS ...) goes on UPDATE, DELETE and INSERT; a SELECT runs no plug-ins or flows. Unexpected");
     if (this.t.kind !== "eof") throw this.error("Unexpected text");
   }
 
@@ -304,29 +372,11 @@ class Parser {
       items.push(this.selectItem());
     }
     this.expect("FROM");
+    if (this.isPunct("(")) throw new SqlError("Subqueries in FROM aren't supported. Query the table directly and filter it with WHERE.", this.t.pos);
     const fromTable = this.identifier("table");
     const from = { table: fromTable.toLowerCase(), alias: (this.tableAlias() ?? fromTable).toLowerCase() };
 
-    const joins: Join[] = [];
-    for (;;) {
-      let outer = false;
-      if (this.is("RIGHT") || this.is("FULL") || this.is("CROSS")) throw new SqlError(`${this.t.upper} JOIN isn't supported; use INNER or LEFT JOIN.`, this.t.pos);
-      if (this.accept("LEFT")) {
-        outer = true;
-        this.accept("OUTER");
-        this.expect("JOIN");
-      } else if (this.accept("INNER")) this.expect("JOIN");
-      else if (!this.accept("JOIN")) break;
-      const table = this.identifier("table");
-      const alias = (this.tableAlias() ?? table).toLowerCase();
-      this.expect("ON");
-      const left = this.columnRef();
-      if (!(this.t.kind === "op" && this.t.value === "=")) throw this.error("Joins need an equality condition like a.col = b.col");
-      this.i++;
-      const right = this.columnRef();
-      if (this.is("AND") || this.is("OR")) throw new SqlError("Joins support a single a.col = b.col condition. Move other conditions to WHERE.", this.t.pos);
-      joins.push({ outer, table: table.toLowerCase(), alias, left, right });
-    }
+    const joins = this.joins(false);
 
     const where = this.accept("WHERE") ? this.orCond() : undefined;
     const groupBy: ColumnRef[] = [];
@@ -356,9 +406,36 @@ class Parser {
         orderBy.push({ ref, desc });
       } while (this.isPunct(","));
     }
-    if (this.isPunct(";")) this.i++;
-    if (this.t.kind !== "eof") throw this.error("Unexpected text");
+    this.end();
     return { distinct, top, items, from, joins, where, groupBy, having, orderBy };
+  }
+
+  /** The JOIN clauses after FROM. A subquery takes INNER JOIN only: FetchXML filters a LEFT JOINed table with the join, not after it. */
+  private joins(inSubquery: boolean): Join[] {
+    const joins: Join[] = [];
+    for (;;) {
+      let outer = false;
+      if (this.is("RIGHT") || this.is("FULL") || this.is("CROSS")) throw new SqlError(`${this.t.upper} JOIN isn't supported; use INNER or LEFT JOIN.`, this.t.pos);
+      if (inSubquery && this.is("LEFT")) {
+        throw new SqlError("A subquery supports INNER JOIN only. A LEFT JOIN with no condition on it changes nothing in EXISTS, and FetchXML can't apply a condition on it after the join.", this.t.pos);
+      }
+      if (this.accept("LEFT")) {
+        outer = true;
+        this.accept("OUTER");
+        this.expect("JOIN");
+      } else if (this.accept("INNER")) this.expect("JOIN");
+      else if (!this.accept("JOIN")) break;
+      const table = this.identifier("table");
+      const alias = (this.tableAlias() ?? table).toLowerCase();
+      this.expect("ON");
+      const left = this.columnRef();
+      if (!(this.t.kind === "op" && this.t.value === "=")) throw this.error("Joins need an equality condition like a.col = b.col");
+      this.i++;
+      const right = this.columnRef();
+      if (this.is("AND") || this.is("OR")) throw new SqlError("Joins support a single a.col = b.col condition. Move other conditions to WHERE.", this.t.pos);
+      joins.push({ outer, table: table.toLowerCase(), alias, left, right });
+    }
+    return joins;
   }
 
   private havingCondition(): Having {
@@ -370,9 +447,9 @@ class Parser {
         this.i++;
         target = { fn: "count" };
       } else {
-        this.accept("DISTINCT");
+        const distinct = this.accept("DISTINCT");
         const ref = this.columnRef();
-        target = { fn: fn === "COUNT" ? "countcolumn" : (fn.toLowerCase() as Having["target"]["fn"]), column: ref.column };
+        target = { fn: fn === "COUNT" ? "countcolumn" : (fn.toLowerCase() as Having["target"]["fn"]), column: ref.column, table: ref.table, distinct };
       }
       this.expectPunct(")");
     } else {
@@ -410,6 +487,9 @@ class Parser {
   }
 
   private selectItem(): SelectItem {
+    if (this.isPunct("(") && this.peek().upper === "SELECT") {
+      throw new SqlError("Subqueries in SELECT aren't supported. FetchXML only uses a subquery as a filter: WHERE [NOT] EXISTS (SELECT ...) or column [NOT] IN (SELECT ...).", this.t.pos);
+    }
     if (this.isPunct("*")) {
       this.i++;
       return { kind: "all" };
@@ -495,6 +575,11 @@ class Parser {
   }
 
   private predicate(): Cond {
+    const start = this.t.pos;
+    if (this.accept("EXISTS")) {
+      this.expectPunct("(");
+      return this.subquery(undefined, start);
+    }
     const ref = this.columnRef();
     if (this.accept("IS")) {
       const not = this.accept("NOT");
@@ -508,7 +593,7 @@ class Parser {
     }
     if (this.accept("IN")) {
       this.expectPunct("(");
-      if (this.is("SELECT")) throw new SqlError("Subqueries aren't supported. Use a JOIN instead.", this.t.pos);
+      if (this.is("SELECT")) return { ...this.subquery(ref, start), negated: not };
       const values = [this.literal()];
       while (this.isPunct(",")) {
         this.i++;
@@ -524,8 +609,15 @@ class Parser {
       return { kind: "cmp", ref, op: not ? "not-between" : "between", values: [a, b] };
     }
     if (not) throw this.error("Expected LIKE, IN, or BETWEEN after NOT");
-    if (this.t.kind !== "op") throw this.error("Expected a comparison (=, <>, <, >, LIKE, IN, IS NULL, BETWEEN)");
+    if (this.t.kind !== "op") throw this.error("Expected a comparison (=, <>, <, >, LIKE, IN, IS NULL, BETWEEN, EXISTS)");
     const op = this.toks[this.i++].value;
+    if (this.isPunct("(") && this.peek().upper === "SELECT") {
+      throw new SqlError(`${op} (SELECT ...) isn't supported. Use column IN (SELECT column FROM ...) or EXISTS (SELECT ...).`, this.t.pos);
+    }
+    const next = this.toks[this.i];
+    if (this.subDepth > 0 && next.kind === "word" && next.quote !== '"' && !["NULL", "TRUE", "FALSE"].includes(next.upper)) {
+      return { kind: "colcmp", left: ref, op, right: this.columnRef(), pos: start };
+    }
     const value = this.literal();
     const map: Record<string, string> = { "=": "eq", "<>": "ne", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge" };
     if (value === null) {
@@ -535,20 +627,305 @@ class Parser {
     }
     return { kind: "cmp", ref, op: map[op], values: [value] };
   }
+
+  /**
+   * The SELECT of EXISTS (...) or IN (...), after its "(". FetchXML links one table per subquery (with its INNER JOINs)
+   * and filters it, so this accepts SELECT <anything simple> FROM table [alias] [JOIN ...] [WHERE ...] and names what it can't take.
+   */
+  private subquery(outer: ColumnRef | undefined, pos: number): SubCond {
+    this.expect("SELECT");
+    this.subDepth++;
+    this.accept("DISTINCT");
+    if (this.is("TOP")) throw new SqlError("TOP isn't supported in a subquery.", this.t.pos);
+    const items: ColumnRef[] = [];
+    let star = false;
+    do {
+      if (this.isPunct(",")) this.i++;
+      if (this.isPunct("*")) {
+        this.i++;
+        star = true;
+      } else if (this.t.kind === "word" && this.peek().value === "." && this.peek(2).value === "*") {
+        this.i += 3;
+        star = true;
+      } else if (this.t.kind === "number") this.i++;
+      else if (this.t.kind === "word" && this.peek().value === "(") {
+        throw new SqlError(`${this.t.value}() isn't supported in a subquery. Select a column, or 1 for EXISTS.`, this.t.pos);
+      } else items.push(this.columnRef());
+    } while (this.isPunct(","));
+    this.expect("FROM");
+    const tableName = this.identifier("table");
+    const table = tableName.toLowerCase();
+    const alias = (this.tableAlias() ?? tableName).toLowerCase();
+    const joins = this.joins(true);
+    const where = this.accept("WHERE") ? this.orCond() : undefined;
+    if (this.is("GROUP") || this.is("ORDER") || this.is("HAVING")) {
+      throw new SqlError(`${this.t.upper} isn't supported in a subquery. A subquery only filters the outer query's rows.`, this.t.pos);
+    }
+    this.expectPunct(")");
+    this.subDepth--;
+    let inner: ColumnRef | undefined;
+    if (outer) {
+      if (star || items.length !== 1) throw new SqlError(`IN (SELECT ...) needs exactly one column, like IN (SELECT ${table}id FROM ${table}).`, pos);
+      inner = items[0];
+      if (inner.table && inner.table !== alias && inner.table !== table) {
+        throw new SqlError(`The column selected in IN (SELECT ...) must come from ${alias}, not ${inner.table}: FetchXML links on the subquery table's own column.`, pos);
+      }
+    }
+    return { kind: "sub", negated: false, outer, inner, table, alias, joins, where, pos };
+  }
 }
 
 export function parseSql(sql: string): SelectQuery {
   return new Parser(tokenize(sql)).parse();
 }
 
+/**
+ * OPTION (BYPASS ...) on a write statement: what Dataverse is told not to run for each row.
+ * "bypass plugins" is custom synchronous and asynchronous plug-ins and workflows (ISV and
+ * Microsoft-published ones still run); "bypass flows" is Power Automate triggers.
+ */
+export type WriteHint = "bypass plugins" | "bypass sync plugins" | "bypass async plugins" | "bypass flows";
+
 export type Statement =
   | { kind: "select"; query: SelectQuery }
-  | { kind: "update"; table: string; alias: string; sets: Array<{ column: string; value: Literal }>; where?: Cond }
-  | { kind: "delete"; table: string; alias: string; where?: Cond }
-  | { kind: "insert"; table: string; alias: string; columns: string[]; rows: Literal[][] };
+  | { kind: "update"; table: string; alias: string; sets: Array<{ column: string; value: Literal }>; where?: Cond; hints?: WriteHint[] }
+  | { kind: "delete"; table: string; alias: string; where?: Cond; hints?: WriteHint[] }
+  | { kind: "insert"; table: string; alias: string; columns: string[]; rows: Literal[][]; hints?: WriteHint[] };
 
 export function parseStatement(sql: string): Statement {
   return new Parser(tokenize(sql)).statement();
+}
+
+// ---------- scopes: a query's tables, and a subquery's inside it ----------
+
+/** One table of a query: the FROM table or a JOIN, with what the FetchXML writer collects for it. */
+export interface TableNode {
+  table: string;
+  alias: string;
+  join?: Join;
+  children: TableNode[];
+  attrs: string[];
+  orders: string[];
+  all: boolean;
+  /** Conditions that must be written in this table's own filter (a subquery linked to it, or a subquery's conditions on its JOINs). */
+  lifted: Cond[];
+}
+
+/** The tables of one query. A subquery gets its own scope, with the query around it as parent, so its WHERE can refer to both. */
+export interface Scope {
+  root: TableNode;
+  nodes: Map<string, TableNode>;
+  parent?: Scope;
+  sub?: SubCond;
+  /** The WHERE written as this scope's root filter: the query's, or a subquery's without its linking condition. */
+  where?: Cond;
+  keyOf?: (table: string) => string | undefined;
+}
+
+function lookup(alias: string, scope: Scope | undefined): { node: TableNode; scope: Scope } | undefined {
+  for (let s = scope; s; s = s.parent) {
+    const node = s.nodes.get(alias);
+    if (node) return { node, scope: s };
+  }
+  return undefined;
+}
+
+function refNode(ref: ColumnRef, scope: Scope): { node: TableNode; scope: Scope } {
+  const found = lookup(ref.table ?? scope.root.alias, scope);
+  if (!found) throw new SqlError(`Unknown table or alias "${ref.table}".`);
+  return found;
+}
+
+const refText = (r: ColumnRef) => (r.table ? `${r.table}.${r.column}` : r.column);
+
+/** The scope of a query: its FROM table and JOINs. */
+export function scopeOf(from: { table: string; alias: string }, joins: Join[], keyOf?: Scope["keyOf"]): Scope {
+  return buildScope(from, joins, undefined, undefined, keyOf);
+}
+
+function buildScope(from: { table: string; alias: string }, joins: Join[], parent?: Scope, sub?: SubCond, keyOf?: Scope["keyOf"]): Scope {
+  const node = (table: string, alias: string, join?: Join): TableNode => ({ table, alias, join, children: [], attrs: [], orders: [], all: false, lifted: [] });
+  const rootNode = node(from.table, from.alias);
+  const scope: Scope = { root: rootNode, nodes: new Map([[from.alias, rootNode]]), parent, sub, keyOf: parent?.keyOf ?? keyOf };
+  if (parent && lookup(from.alias, parent)) {
+    throw new SqlError(`The subquery's alias "${from.alias}" is already used by the outer query. Give the subquery's ${from.table} its own alias, like FROM ${from.table} s.`, sub?.pos);
+  }
+  // The table's own name qualifies its columns too, unless an outer query already goes by it.
+  if (from.table !== from.alias && !lookup(from.table, parent)) scope.nodes.set(from.table, rootNode);
+  for (const j of joins) {
+    if (scope.nodes.has(j.alias)) throw new SqlError(`The alias "${j.alias}" is used twice.`);
+    if (parent && lookup(j.alias, parent)) throw new SqlError(`The alias "${j.alias}" is already used by the outer query. Give the subquery's ${j.table} its own alias.`, sub?.pos);
+    const sideOf = (r: ColumnRef) => r.table ?? from.alias;
+    let mine: ColumnRef;
+    let theirs: ColumnRef;
+    if (sideOf(j.left) === j.alias) [mine, theirs] = [j.left, j.right];
+    else if (sideOf(j.right) === j.alias) [mine, theirs] = [j.right, j.left];
+    else throw new SqlError(`The ON condition for ${j.alias} must use a column from ${j.alias}.`);
+    const parentNode = scope.nodes.get(sideOf(theirs));
+    if (!parentNode) throw new SqlError(`Unknown table or alias "${sideOf(theirs)}" in the join to ${j.alias}.`);
+    const child = node(j.table, j.alias, { ...j, left: mine, right: theirs });
+    parentNode.children.push(child);
+    scope.nodes.set(j.alias, child);
+  }
+  return scope;
+}
+
+/** Why a column = column condition can't be written where it is. */
+export function columnComparisonError(c: Extract<Cond, { kind: "colcmp" }>, scope: Scope): SqlError {
+  if (!scope.sub || !scope.parent) return new SqlError("Comparing one column to another isn't supported in WHERE. Compare columns to values.", c.pos);
+  const l = refNode(c.left, scope).scope === scope;
+  const r = refNode(c.right, scope).scope === scope;
+  if (l && r) {
+    return new SqlError(
+      `Comparing two columns of ${scope.root.alias} isn't supported. To link the subquery to the outer query, qualify the outer column, like ${scope.root.alias}.${c.left.column} = ${scope.parent.root.alias}.${c.right.column}.`,
+      c.pos
+    );
+  }
+  if (!l && !r) return new SqlError(`${refText(c.left)} and ${refText(c.right)} belong to the outer query. Move that condition out of the subquery.`, c.pos);
+  return new SqlError(`The condition linking the subquery to the outer query (${refText(c.left)} ${c.op} ${refText(c.right)}) must be joined to the rest with AND, not OR.`, c.pos);
+}
+
+function findColumnComparison(conds: Cond[]): Extract<Cond, { kind: "colcmp" }> | undefined {
+  for (const c of conds) {
+    if (c.kind === "colcmp") return c;
+    if (c.kind === "not") {
+      const found = findColumnComparison([c.item]);
+      if (found) return found;
+    }
+    if (c.kind === "and" || c.kind === "or") {
+      const found = findColumnComparison(c.items);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+const leftJoinLinkError = (n: TableNode, scope: Scope, pos?: number) =>
+  new SqlError(`A subquery can't be linked to ${n.alias}, a LEFT JOINed table: FetchXML would apply it to the join instead of to the results. Use INNER JOIN, or link the subquery to ${scope.root.alias}.`, pos);
+
+/** A subquery resolved against the query around it. */
+export interface ResolvedSubquery {
+  /** The subquery table's column (link-entity from). */
+  from: string;
+  /** The outer column (link-entity to), and the outer table it belongs to. */
+  to: ColumnRef;
+  toAlias: string;
+  toTable: string;
+  /** True when the outer table is the FROM table of the query around the subquery; otherwise it's one of that query's JOINs. */
+  toRoot: boolean;
+  negated: boolean;
+  table: string;
+  alias: string;
+  /** The subquery's JOINs, each with the alias it hangs off and the column pair (from = its column, to = the parent's). */
+  joins: Array<{ table: string; alias: string; parentAlias: string; from: string; to: string }>;
+  /** The subquery's WHERE without the linking condition. */
+  where?: Cond;
+  scope: Scope;
+}
+
+/**
+ * Finds the condition linking a subquery to the query around it (its link-entity from/to) and what's left of its WHERE.
+ * With owner (the alias whose filter the subquery is being written in), a subquery linked to another table is an error.
+ */
+export function resolveSubquery(s: SubCond, scope: Scope, owner?: string): ResolvedSubquery {
+  const inner = buildScope({ table: s.table, alias: s.alias }, s.joins, scope, s);
+  const where = s.where ? pushNot(s.where) : undefined;
+  let from = s.inner?.column;
+  let to = s.outer;
+  const rest: Cond[] = [];
+  for (const c of !where ? [] : where.kind === "and" ? where.items : [where]) {
+    if (c.kind !== "colcmp") {
+      rest.push(c);
+      continue;
+    }
+    const l = refNode(c.left, inner);
+    const r = refNode(c.right, inner);
+    if ((l.scope === inner) === (r.scope === inner)) {
+      rest.push(c); // Both inner or both outer: columnComparisonError explains it.
+      continue;
+    }
+    const [mine, theirs, mineRef, theirsRef] = l.scope === inner ? [l, r, c.left, c.right] : [r, l, c.right, c.left];
+    const text = `${refText(c.left)} ${c.op} ${refText(c.right)}`;
+    if (c.op !== "=") throw new SqlError(`A subquery is linked to the outer query with =, not ${c.op} (${text}).`, c.pos);
+    if (from) throw new SqlError(`A subquery can have one condition linking it to the outer query; ${text} is a second one. FetchXML links tables on a single column pair.`, c.pos);
+    if (mine.node !== inner.root) {
+      throw new SqlError(`The subquery links to the outer query through ${mine.node.alias}, a table it JOINs. Link it through a column of ${s.alias}, or make ${mine.node.table} the subquery's FROM table.`, c.pos);
+    }
+    if (theirs.scope !== scope) {
+      throw new SqlError(`A subquery can only be linked to the query directly around it (${scope.root.alias}), not to ${theirs.scope.root.alias} further out.`, c.pos);
+    }
+    from = mineRef.column;
+    to = theirsRef;
+  }
+  if (!from || !to) {
+    const misplaced = findColumnComparison(rest);
+    if (misplaced) throw columnComparisonError(misplaced, inner);
+    const key = scope.keyOf?.(scope.root.table) ?? `${scope.root.table}id`;
+    throw new SqlError(`The subquery on ${s.table} needs a condition linking it to ${scope.root.alias}, like WHERE ${s.alias}.<column> = ${scope.root.alias}.${key}.`, s.pos);
+  }
+  const target = refNode(to, scope);
+  if (target.scope !== scope) {
+    throw new SqlError(`A subquery can only be linked to the query directly around it (${scope.root.alias}), not to ${target.scope.root.alias} further out.`, s.pos);
+  }
+  const toNode = target.node;
+  if (owner !== undefined && toNode.alias !== owner) {
+    if (toNode.join?.outer) throw leftJoinLinkError(toNode, scope, s.pos);
+    throw new SqlError(`A subquery linked to the joined table ${toNode.alias} must be combined with the rest of the WHERE using AND, not OR: FetchXML puts it inside that table's join.`, s.pos);
+  }
+  inner.where = rest.length ? (rest.length === 1 ? rest[0] : { kind: "and", items: rest }) : undefined;
+  const joins: ResolvedSubquery["joins"] = [];
+  const collect = (n: TableNode): void => {
+    for (const child of n.children) {
+      joins.push({ table: child.table, alias: child.alias, parentAlias: n.alias, from: child.join!.left.column, to: child.join!.right.column });
+      collect(child);
+    }
+  };
+  collect(inner.root);
+  return { from, to, toAlias: toNode.alias, toTable: toNode.table, toRoot: toNode === scope.root, negated: s.negated, table: s.table, alias: s.alias, joins, where: inner.where, scope: inner };
+}
+
+/**
+ * Splits a WHERE into what the root filter holds and what must be written in a JOINed table's own filter:
+ * a subquery linked to that table and, inside a subquery, conditions on its JOINs (a link-entity's filter
+ * can't reference another link-entity). Only the top-level AND can be split; the rest stays, and the writer
+ * explains anything it then can't place.
+ */
+export function partitionWhere(where: Cond | undefined, scope: Scope): { own?: Cond; lifted: Array<{ alias: string; cond: Cond }> } {
+  if (!where) return { lifted: [] };
+  const w = pushNot(where);
+  const own: Cond[] = [];
+  const lifted: Array<{ alias: string; cond: Cond }> = [];
+  for (const c of w.kind === "and" ? w.items : [w]) {
+    let target: TableNode | undefined;
+    if (c.kind === "sub") {
+      const r = resolveSubquery(c, scope);
+      if (!r.toRoot) {
+        const node = scope.nodes.get(r.toAlias)!;
+        if (node.join?.outer) throw leftJoinLinkError(node, scope, c.pos);
+        target = node;
+      }
+    } else if (c.kind === "cmp" && scope.sub) {
+      const r = refNode(c.ref, scope);
+      if (r.scope === scope && r.node !== scope.root) target = r.node;
+    }
+    if (target) lifted.push({ alias: target.alias, cond: c });
+    else own.push(c);
+  }
+  return { own: own.length ? (own.length === 1 ? own[0] : { kind: "and", items: own }) : undefined, lifted };
+}
+
+/** The table a condition's column belongs to, checked against the filter (owner alias) it's written in. */
+export function resolveColumn(ref: ColumnRef, scope: Scope, owner: string): { alias: string; root: boolean } {
+  const r = refNode(ref, scope);
+  if (r.scope !== scope) {
+    throw new SqlError(`The subquery on ${scope.root.alias} can only filter ${scope.root.alias}'s columns; ${refText(ref)} belongs to the outer query. Move that condition out of the subquery.`);
+  }
+  if (scope.sub && r.node.alias !== owner) {
+    throw new SqlError(
+      `Inside a subquery, a condition on the joined table ${r.node.alias} (${refText(ref)}) must be combined with the rest of the subquery's WHERE using AND, not OR: FetchXML can only filter that table inside its join.`
+    );
+  }
+  return { alias: r.node.alias, root: r.node === scope.root };
 }
 
 // ---------- FetchXML ----------
@@ -558,16 +935,22 @@ const NEGATE: Record<string, string> = {
   in: "not-in", "not-in": "in", null: "not-null", "not-null": "null", between: "not-between", "not-between": "between",
 };
 
-/** Pushes NOT down to the comparisons (De Morgan), since FetchXML has no NOT. */
+const NEGATE_COLUMN_OP: Record<string, string> = { "=": "<>", "<>": "=", "!=": "=", "<": ">=", ">=": "<", ">": "<=", "<=": ">" };
+
+/** Pushes NOT down to the comparisons (De Morgan), since FetchXML has no NOT. A subquery's own WHERE is left alone. */
 function pushNot(c: Cond, negate = false): Cond {
   if (c.kind === "not") return pushNot(c.item, !negate);
   if (c.kind === "cmp") return negate ? { ...c, op: NEGATE[c.op] } : c;
+  if (c.kind === "colcmp") return negate ? { ...c, op: NEGATE_COLUMN_OP[c.op] ?? c.op } : c;
+  if (c.kind === "sub") return negate ? { ...c, negated: !c.negated } : c;
   const kind = negate ? (c.kind === "and" ? "or" : "and") : c.kind;
   return { kind, items: c.items.map((i) => pushNot(i, negate)) };
 }
 
 export function xmlEscape(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // Line breaks and tabs as character references: in an attribute, XML turns literal ones into spaces.
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+    .replace(/\r/g, "&#13;").replace(/\n/g, "&#10;").replace(/\t/g, "&#9;");
 }
 
 /** One column of the result grid: where its value comes from in the Web API response. */
@@ -602,41 +985,22 @@ export function translate(sql: string, options: TranslateOptions = {}): Translat
 
 export function translateQuery(q: SelectQuery, options: TranslateOptions = {}): Translation {
   const root = q.from;
-  type Node = { table: string; alias: string; join?: Join; children: Node[]; attrs: string[]; orders: string[]; all: boolean };
-  const rootNode: Node = { table: root.table, alias: root.alias, children: [], attrs: [], orders: [], all: false };
-  const nodes = new Map<string, Node>([[root.alias, rootNode]]);
-  if (root.table !== root.alias) nodes.set(root.table, rootNode);
-
-  for (const j of q.joins) {
-    if (nodes.has(j.alias)) throw new SqlError(`The alias "${j.alias}" is used twice.`);
-    const sideOf = (r: ColumnRef) => r.table ?? root.alias;
-    let mine: ColumnRef;
-    let theirs: ColumnRef;
-    if (sideOf(j.left) === j.alias) [mine, theirs] = [j.left, j.right];
-    else if (sideOf(j.right) === j.alias) [mine, theirs] = [j.right, j.left];
-    else throw new SqlError(`The ON condition for ${j.alias} must use a column from ${j.alias}.`);
-    const parent = nodes.get(sideOf(theirs));
-    if (!parent) throw new SqlError(`Unknown table or alias "${sideOf(theirs)}" in the join to ${j.alias}.`);
-    const node: Node = { table: j.table, alias: j.alias, join: { ...j, left: mine, right: theirs }, children: [], attrs: [], orders: [], all: false };
-    parent.children.push(node);
-    nodes.set(j.alias, node);
-  }
-
-  const nodeFor = (ref: ColumnRef): Node => {
-    const n = nodes.get(ref.table ?? root.alias);
-    if (!n) throw new SqlError(`Unknown table or alias "${ref.table}".`);
-    return n;
-  };
-  const isRoot = (n: Node) => n === rootNode;
+  const outer = scopeOf(root, q.joins, options.primaryIdOf);
+  outer.where = q.where;
+  const rootNode = outer.root;
+  const nodes = outer.nodes;
+  const nodeFor = (ref: ColumnRef): TableNode => refNode(ref, outer).node;
+  const isRoot = (n: TableNode) => n === rootNode;
 
   const aggregate = q.items.some((i) => i.kind === "aggregate") || q.groupBy.length > 0;
   const columns: ResultColumn[] = [];
   let hasAll = false;
   const usedAliases = new Set<string>();
   const uniqueAlias = (base: string) => {
-    let a = base.replace(/[^\w]/g, "_");
+    const safe = base.replace(/[^\w]/g, "_");
+    let a = safe;
     let n = 2;
-    while (usedAliases.has(a)) a = `${base}_${n++}`;
+    while (usedAliases.has(a)) a = `${safe}_${n++}`;
     usedAliases.add(a);
     return a;
   };
@@ -700,10 +1064,11 @@ export function translateQuery(q: SelectQuery, options: TranslateOptions = {}): 
     n.orders.push(`<order attribute="${xmlEscape(ref.column)}"${desc} />`);
   }
 
-  const condXml = (c: Cond, indent: string): string => {
+  /** A condition inside the filter of owner (a table of scope). In the outer query, another table's column gets entityname. */
+  const condXml = (c: Cond, scope: Scope, owner: TableNode, indent: string): string => {
     if (c.kind === "cmp") {
-      const n = nodeFor(c.ref);
-      const entity = isRoot(n) ? "" : ` entityname="${n.alias}"`;
+      const col = resolveColumn(c.ref, scope, owner.alias);
+      const entity = col.alias === owner.alias ? "" : ` entityname="${col.alias}"`;
       const head = `${indent}<condition${entity} attribute="${xmlEscape(c.ref.column)}" operator="${c.op}"`;
       if (!c.values.length) return `${head} />`;
       if (["in", "not-in", "between", "not-between"].includes(c.op)) {
@@ -712,23 +1077,43 @@ export function translateQuery(q: SelectQuery, options: TranslateOptions = {}): 
       }
       return `${head} value="${xmlEscape(String(c.values[0]))}" />`;
     }
-    if (c.kind === "not") return condXml(pushNot(c), indent);
-    return `${indent}<filter type="${c.kind}">\n${c.items.map((i) => condXml(i, indent + "  ")).join("\n")}\n${indent}</filter>`;
+    if (c.kind === "colcmp") throw columnComparisonError(c, scope);
+    if (c.kind === "sub") return subXml(c, scope, owner, indent);
+    if (c.kind === "not") return condXml(pushNot(c), scope, owner, indent);
+    return `${indent}<filter type="${c.kind}">\n${c.items.map((i) => condXml(i, scope, owner, indent + "  ")).join("\n")}\n${indent}</filter>`;
   };
 
-  const nodeXml = (n: Node, indent: string): string => {
+  /**
+   * [NOT] EXISTS / [NOT] IN (SELECT ...) as <link-entity link-type="any" | "not any"> inside owner's filter: the condition
+   * linking the subquery's table to owner becomes from/to, and the rest of its WHERE (and its JOINs) go inside the link.
+   */
+  const subXml = (s: SubCond, scope: Scope, owner: TableNode, indent: string): string => {
+    const r = resolveSubquery(s, scope, owner.alias);
+    const head = `${indent}<link-entity name="${xmlEscape(s.table)}" from="${xmlEscape(r.from)}" to="${xmlEscape(r.to.column)}" link-type="${s.negated ? "not any" : "any"}"`;
+    const body = nodeXml(r.scope.root, r.scope, indent + "  ");
+    return body ? `${head}>\n${body}\n${indent}</link-entity>` : `${head} />`;
+  };
+
+  const nodeXml = (n: TableNode, scope: Scope, indent: string): string => {
     const lines: string[] = [];
     if (n.all) lines.push(`${indent}<all-attributes />`);
     lines.push(...n.attrs.map((a) => indent + a));
     lines.push(...n.orders.map((o) => indent + o));
-    if (isRoot(n) && q.where) {
-      const where = pushNot(q.where);
-      lines.push(where.kind === "cmp" ? `${indent}<filter>\n${condXml(where, indent + "  ")}\n${indent}</filter>` : condXml(where, indent));
+    const conds = [...n.lifted];
+    if (n === scope.root) {
+      // Split the WHERE first: what a JOINed table must hold is written when that table is.
+      const { own, lifted } = partitionWhere(scope.where, scope);
+      for (const l of lifted) scope.nodes.get(l.alias)!.lifted.push(l.cond);
+      if (own) conds.push(own);
+    }
+    if (conds.length) {
+      const w: Cond = conds.length === 1 ? conds[0] : { kind: "and", items: conds };
+      lines.push(w.kind === "and" || w.kind === "or" ? condXml(w, scope, n, indent) : `${indent}<filter>\n${condXml(w, scope, n, indent + "  ")}\n${indent}</filter>`);
     }
     for (const child of n.children) {
       const j = child.join!;
       const linkType = j.outer ? "outer" : "inner";
-      const body = nodeXml(child, indent + "  ");
+      const body = nodeXml(child, scope, indent + "  ");
       lines.push(
         `${indent}<link-entity name="${xmlEscape(child.table)}" from="${xmlEscape(j.left.column)}" to="${xmlEscape(j.right.column)}" alias="${child.alias}" link-type="${linkType}"${body ? ">" : " />"}`
       );
@@ -742,7 +1127,7 @@ export function translateQuery(q: SelectQuery, options: TranslateOptions = {}): 
     q.distinct ? ' distinct="true"' : "",
     aggregate ? ' aggregate="true"' : "",
   ].join("");
-  const fetchXml = `<fetch${fetchAttrs}>\n  <entity name="${xmlEscape(root.table)}">\n${nodeXml(rootNode, "    ")}\n  </entity>\n</fetch>`;
+  const fetchXml = `<fetch${fetchAttrs}>\n  <entity name="${xmlEscape(root.table)}">\n${nodeXml(rootNode, outer, "    ")}\n  </entity>\n</fetch>`;
   const OPS = { eq: "=", ne: "<>", lt: "<", le: "<=", gt: ">", ge: ">=" };
   const having = (q.having ?? []).map((h) => {
     const t = h.target;
@@ -750,7 +1135,9 @@ export function translateQuery(q: SelectQuery, options: TranslateOptions = {}): 
       ? columns.find((c) => c.header.toLowerCase() === t.alias && c.valueAlias)
       : q.items
           .map((it, idx) => ({ it, col: columns[idx] }))
-          .find(({ it }) => it.kind === "aggregate" && it.fn === t.fn && (t.fn === "count" || it.ref?.column === t.column))?.col;
+          // The same function on the same column of the same table, DISTINCT or not, as the select list has it.
+          .find(({ it }) => it.kind === "aggregate" && it.fn === t.fn && (t.fn === "count" ||
+            (!!it.ref && it.ref.column === t.column && it.distinct === !!t.distinct && nodeFor(it.ref) === nodeFor({ table: t.table, column: t.column! }))))?.col;
     const alias = item?.valueAlias;
     const label = t.alias ?? `${t.fn === "countcolumn" ? "COUNT" : (t.fn ?? "").toUpperCase()}(${t.column ?? "*"})`;
     if (!alias) throw new SqlError(`Select ${label} too (e.g. ${label} AS count) so HAVING can filter on it.`);

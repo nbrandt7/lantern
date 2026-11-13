@@ -7,6 +7,7 @@ export function parseCsv(text: string): string[][] {
   let row: string[] = [];
   let field = "";
   let quoted = false;
+  let wasQuoted = false;
   for (let i = 0; i < clean.length; i++) {
     const c = clean[i];
     if (quoted) {
@@ -17,16 +18,19 @@ export function parseCsv(text: string): string[][] {
       else field += c;
       continue;
     }
-    if (c === '"') quoted = true;
+    // Quotes only open a quoted field at its start; one later in an unquoted field (24" screen) is just a character.
+    if (c === '"' && field === "" && !wasQuoted) quoted = wasQuoted = true;
     else if (c === delimiter) {
       row.push(field);
       field = "";
+      wasQuoted = false;
     } else if (c === "\n" || c === "\r") {
       if (c === "\r" && clean[i + 1] === "\n") i++;
       row.push(field);
       rows.push(row);
       row = [];
       field = "";
+      wasQuoted = false;
     } else field += c;
   }
   if (field || row.length) {

@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { Client, ClientConfig, normalizeConfig, readTenantDocument, serializeTenant, tenantsInFile } from "../core/clients";
+import { Client, ClientConfig, normalizeConfig, readTenantDocument, serializeTenant, storedConfigName, TenantDocument, tenantsInFile } from "../core/clients";
 import { readJson, writeJson } from "../core/files";
 
 let globalTenantsFile: string | undefined;
@@ -18,8 +18,14 @@ export function configureTenantContext(file: string, location: "global" | "folde
   mode = location;
   if (selected) {
     const saved = availableTenants().find((tenant) => keyOf(tenant) === selected);
-    if (saved && active && keyOf(active) === selected) active.reload();
-    else active = saved;
+    if (saved && active && keyOf(active) === selected) {
+      if (path.resolve(saved.dir) === path.resolve(active.dir)) active.reload();
+      else {
+        // A client's folder is fixed when it's made, so an edited "folder" takes the freshly read tenant.
+        if (active.envName) saved.selectEnvironment(active.envName);
+        active = saved;
+      }
+    } else active = saved;
     if (!saved) selected = undefined;
   }
   if (mode === "folder" && !selected) {
@@ -87,7 +93,9 @@ export function addTenant(name: string, config: Partial<ClientConfig>, workspace
 
 export function removeTenant(tenant: Client): void {
   const document = readTenantDocument(tenant.configFile);
-  document.tenants = document.tenants.filter((entry) => entry.name !== tenant.name);
+  // Only the first entry with a name is offered (see tenantsInFile), so only that one goes.
+  const index = document.tenants.findIndex((entry) => entry.name === tenant.name);
+  if (index >= 0) document.tenants.splice(index, 1);
   if (mode === "global") (document.removedFolders ??= []).push(tenant.dir);
   if (document.defaultTenant === tenant.name) delete document.defaultTenant;
   writeJson(tenant.configFile, document);
@@ -123,15 +131,31 @@ export function registerStoredTenant(tenant: Client, explicit = false): void {
 /** Existing internal settings were stored as one file per folder. Keep them visible in the shared picker. */
 export function importSavedTenants(storeDir: string): void {
   if (mode !== "global" || !globalTenantsFile) return;
-  const document = readTenantDocument(globalTenantsFile);
+  let document: TenantDocument;
+  // A hand-edited tenants.json that doesn't parse is reported by unreadableTenantFile; import once it's fixed.
+  try { document = readTenantDocument(globalTenantsFile); }
+  catch { return; }
   if (document.legacyImported) return;
+  // Store files are named after a hash of their folder's path, so match them to the folders the old
+  // version would have found: each workspace folder and the folders directly in it.
+  const folders = new Map<string, string>();
+  for (const root of roots()) {
+    let children: string[] = [];
+    try { children = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(root, e.name)); }
+    catch { /* A missing workspace folder has nothing to match. */ }
+    for (const dir of [root, ...children]) folders.set(storedConfigName(dir), dir);
+  }
+  const sameFolder = (a?: string, b?: string) => (a ? path.resolve(a) : "") === (b ? path.resolve(b) : "");
+  // Each store file is a different folder, so only an entry that was already here can duplicate one.
+  const existing = document.tenants.map((saved) => normalizeConfig(saved));
   for (const file of fs.existsSync(storeDir) ? fs.readdirSync(storeDir) : []) {
     const match = /^(.*)-[a-f0-9]{10}\.lantern-client\.json$/.exec(file);
     if (!match) continue;
     try {
-      const config = normalizeConfig(readJson<Partial<ClientConfig>>(path.join(storeDir, file)));
-      if (document.tenants.some((saved) => saved.org === config.org && saved.tenant === config.tenant && saved.account === config.account)) continue;
-      const base = match[1];
+      const folder = folders.get(file);
+      const config = { ...normalizeConfig(readJson<Partial<ClientConfig>>(path.join(storeDir, file))), ...(folder ? { folder } : {}) };
+      if (existing.some((saved) => saved.org === config.org && saved.tenant === config.tenant && saved.account === config.account && sameFolder(saved.folder, config.folder))) continue;
+      const base = folder ? path.basename(folder) : match[1];
       let name = base;
       for (let number = 2; document.tenants.some((entry) => entry.name === name); number++) name = `${base} ${number}`;
       document.tenants.push(serializeTenant(name, config));
@@ -140,4 +164,14 @@ export function importSavedTenants(storeDir: string): void {
   document.legacyImported = true;
   fs.mkdirSync(path.dirname(globalTenantsFile), { recursive: true });
   writeJson(globalTenantsFile, document);
+}
+
+/** The tenant file that can't be read (hand-edited JSON that doesn't parse), which lists no tenants until it's fixed. */
+export function unreadableTenantFile(): { file: string; message: string } | undefined {
+  const files = mode === "global" ? (globalTenantsFile ? [globalTenantsFile] : []) : localFiles();
+  for (const file of files) {
+    try { readTenantDocument(file); }
+    catch (error) { return { file, message: error instanceof Error ? error.message : String(error) }; }
+  }
+  return undefined;
 }

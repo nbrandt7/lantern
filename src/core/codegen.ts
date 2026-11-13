@@ -1,5 +1,5 @@
 import { fetchXmlStart } from "./query";
-import { Cond, parseSql, SelectQuery, translateQuery, TranslateOptions } from "./sql";
+import { columnComparisonError, Cond, parseSql, partitionWhere, resolveColumn, resolveSubquery, Scope, scopeOf, SelectQuery, SubCond, translateQuery, TranslateOptions } from "./sql";
 
 export type CodeFormat = "xrmWebApi" | "webApiUrl" | "csFetch" | "csQuery";
 
@@ -41,7 +41,7 @@ export function generate(format: CodeFormat, input: CodeInput): { code: string }
       return {
         code: [
           ...(havingNote ? [`// ${havingNote}`] : []),
-          `const fetchXml = \`${fetchXml.replace(/`/g, "\\`").replace(/\$\{/g, "\\${")}\`;`,
+          `const fetchXml = \`${fetchXml.replace(/[\\`]/g, "\\$&").replace(/\$\{/g, "\\${")}\`;`,
           `const result = await Xrm.WebApi.retrieveMultipleRecords("${table}", "?fetchXml=" + encodeURIComponent(fetchXml));`,
           "for (const row of result.entities) {",
           "  // row.<column>, row[\"<column>@OData.Community.Display.V1.FormattedValue\"] for display text",
@@ -52,7 +52,9 @@ export function generate(format: CodeFormat, input: CodeInput): { code: string }
       const set = input.entitySetOf(table);
       if (!set) return { error: `Couldn't find the Web API entity set for ${table}.` };
       if (havingNote) return { error: `${havingNote} A URL can't do that filtering, so copy it as JavaScript or C# instead.` };
-      return { code: `${input.org.replace(/\/+$/, "")}/api/data/v9.2/${set}?fetchXml=${encodeURIComponent(fetchXml.replace(/\s*\n\s*/g, ""))}` };
+      // One line: a line break inside a tag (between attributes) is a space, one between tags is nothing.
+      const oneLine = fetchXml.replace(/<[^>]*>/g, (tag) => tag.replace(/\s*\n\s*/g, " ")).replace(/\s*\n\s*/g, "");
+      return { code: `${input.org.replace(/\/+$/, "")}/api/data/v9.2/${set}?fetchXml=${encodeURIComponent(oneLine)}` };
     }
     case "csFetch":
       return {
@@ -81,7 +83,8 @@ const OPERATOR: Record<string, string> = {
   between: "Between", "not-between": "NotBetween",
 };
 
-const csString = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+// A regular C# string can't span lines (CS1010), so line breaks are escaped too.
+const csString = (s: string) => `"${s.replace(/[\\"]/g, "\\$&").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/[\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 const csValue = (v: string | number | null) => (typeof v === "number" ? String(v) : v === null ? "null" : csString(v));
 
 function queryExpression(q: SelectQuery): string {
@@ -113,24 +116,55 @@ function queryExpression(q: SelectQuery): string {
   });
 
   if (q.where) {
-    const cond = (c: Cond, filterVar: string, depth: number): void => {
+    const scope = scopeOf(root, q.joins);
+    let filters = 0;
+    let subs = 0;
+    /** Writes a condition into filterVar, the criteria of owner (an alias in scope). */
+    const cond = (c: Cond, filterVar: string, scope: Scope, owner: string): void => {
       if (c.kind === "cmp") {
-        const entity = c.ref.table && c.ref.table !== root.alias ? `${csString(c.ref.table)}, ` : "";
+        const col = resolveColumn(c.ref, scope, owner);
+        const entity = col.alias !== owner ? `${csString(col.alias)}, ` : "";
         const values = c.values.length ? `, ${c.values.map(csValue).join(", ")}` : "";
         lines.push(`${filterVar}.AddCondition(${entity}${csString(c.ref.column)}, ConditionOperator.${OPERATOR[c.op] ?? c.op}${values});`);
         return;
       }
+      if (c.kind === "colcmp") throw columnComparisonError(c, scope);
       if (c.kind === "not") {
         lines.push(`// NOT isn't expressible directly; it was rewritten below.`);
-        cond(negate(c.item), filterVar, depth);
+        cond(negate(c.item), filterVar, scope, owner);
         return;
       }
-      const v = `filter${depth}`;
+      if (c.kind === "sub") {
+        subquery(c, filterVar, scope, owner);
+        return;
+      }
+      const v = `filter${++filters}`;
       lines.push(`var ${v} = new FilterExpression(LogicalOperator.${c.kind === "and" ? "And" : "Or"});`);
-      for (const item of c.items) cond(item, v, depth + 1);
+      for (const item of c.items) cond(item, v, scope, owner);
       lines.push(`${filterVar}.AddFilter(${v});`);
     };
-    cond(q.where, "query.Criteria", 1);
+    /** [NOT] EXISTS / IN (SELECT ...): a LinkEntity with JoinOperator.Any / NotAny as a filter's AnyAllFilterLinkEntity. */
+    const subquery = (s: SubCond, filterVar: string, scope: Scope, owner: string): void => {
+      const r = resolveSubquery(s, scope, owner);
+      const v = `sub${++subs}`;
+      lines.push(`var ${v} = new LinkEntity(${csString(r.toTable)}, ${csString(r.table)}, ${csString(r.to.column)}, ${csString(r.from)}, JoinOperator.${r.negated ? "NotAny" : "Any"});`);
+      const linkVar = new Map<string, string>([[r.alias, v]]);
+      r.joins.forEach((j, i) => {
+        const jv = `${v}Link${i + 1}`;
+        linkVar.set(j.alias, jv);
+        lines.push(`var ${jv} = ${linkVar.get(j.parentAlias)}.AddLink(${csString(j.table)}, ${csString(j.to)}, ${csString(j.from)}, JoinOperator.Inner);`, `${jv}.EntityAlias = ${csString(j.alias)};`);
+      });
+      writeWhere(r.where, r.scope, (alias) => `${linkVar.get(alias)}.LinkCriteria`);
+      const fv = `filter${++filters}`;
+      lines.push(`var ${fv} = new FilterExpression(LogicalOperator.And) { AnyAllFilterLinkEntity = ${v} };`, `${filterVar}.AddFilter(${fv});`);
+    };
+    /** A WHERE, with what belongs in a JOINed table's own criteria written there. */
+    const writeWhere = (where: Cond | undefined, scope: Scope, criteriaOf: (alias: string) => string): void => {
+      const { own, lifted } = partitionWhere(where, scope);
+      for (const l of lifted) cond(l.cond, criteriaOf(l.alias), scope, l.alias);
+      if (own) cond(own, criteriaOf(scope.root.alias), scope, scope.root.alias);
+    };
+    writeWhere(q.where, scope, (alias) => (alias === root.alias ? "query.Criteria" : `${aliasVar.get(alias)}.LinkCriteria`));
   }
 
   for (const o of q.orderBy) {
@@ -150,5 +184,7 @@ const NEGATE: Record<string, string> = {
 function negate(c: Cond): Cond {
   if (c.kind === "cmp") return { ...c, op: NEGATE[c.op] };
   if (c.kind === "not") return c.item;
+  if (c.kind === "sub") return { ...c, negated: !c.negated };
+  if (c.kind === "colcmp") return c;
   return { kind: c.kind === "and" ? "or" : "and", items: c.items.map(negate) };
 }

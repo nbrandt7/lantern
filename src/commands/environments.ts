@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import { Client, normalizeOrg } from "../core/clients";
 import { compareEnvironments, comparisonMarkdown } from "../core/compare";
 import { MetadataService } from "../core/metadata";
-import { dataverseFor, forgetSignIn } from "../ui/auth";
-import { reportError, resolveClient, withProgress } from "../ui/context";
+import { COMMON_ENVIRONMENT_NAMES, discoverEnvironments, discoveryHost, suggestEnvironmentName } from "../core/discovery";
+import { dataverseFor, discoveryToken, forgetSignIn } from "../ui/auth";
+import { EnvironmentPanelState, openEnvironmentPanel } from "../ui/panels/environmentPanel";
+import { reportError, resolveClient, withProgress, write } from "../ui/context";
 import { TableDocProvider } from "./metadata";
 import { DataverseContentProvider } from "./webResources";
 
@@ -125,48 +127,65 @@ function hostOf(org: string): string {
 }
 
 /**
- * Adds an environment. A client with a single org first gets that org named (DEV by
- * default), so it becomes one of the environments instead of being replaced.
+ * Adds an environment, from one page (src/ui/panels/environmentPanel.ts): the
+ * environments the account can open (Global Discovery Service) on the left, the
+ * name, org URL and protection on the right. A client with a single org first
+ * gets that org named on the same page, so it becomes one of the environments
+ * instead of being replaced.
  */
 async function addEnvironment(client: Client): Promise<void> {
   client.reload();
   const c = client.config;
-  if (!c.environments.length && c.org) {
-    const first = await vscode.window.showInputBox({
-      title: `Name the current org (${client.orgHost})`,
-      prompt: "Environments are named like DEV, TEST, UAT, PROD",
-      value: "DEV",
-      ignoreFocusOut: true,
-    });
-    if (!first) return;
-    c.environments.push({ name: first.trim(), org: c.org });
-    c.environment = first.trim();
+  const known = new Set(c.environments.map((e) => hostOf(e.org).toLowerCase()));
+  if (!c.environments.length && c.org) known.add(client.orgHost.toLowerCase());
+  const resource = discoveryHost(client.config.org);
+  const found = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Finding the environments you can open…" }, async () => {
+    try {
+      const token = await discoveryToken(client, resource);
+      return token ? await discoverEnvironments(resource, token) : undefined;
+    } catch (err) {
+      write(`Couldn't list environments from ${resource}: ${err instanceof Error ? err.message : String(err)}
+`);
+      return undefined;
+    }
+  });
+  const candidates = (found ?? []).filter((e) => !known.has(hostOf(e.url).toLowerCase()));
+  const urlName = client.orgHost.split(".")[0];
+  const current = !c.environments.length && c.org ? { host: client.orgHost, suggested: suggestEnvironmentName(urlName), from: urlName } : undefined;
+  const state: EnvironmentPanelState = {
+    subtitle: `${client.name}${c.environments.length ? ` has ${c.environments.map((e) => e.name).join(", ")}` : current ? ` uses ${client.orgHost}` : ""}`,
+    client: client.name,
+    current,
+    found: candidates.map((e) => ({
+      id: normalizeOrg(e.url),
+      label: e.friendlyName,
+      host: hostOf(e.url),
+      meta: [e.region, e.version ? `version ${e.version}` : ""].filter(Boolean).join(" · "),
+      disabled: e.state !== 0,
+      suggested: suggestEnvironmentName(e.friendlyName, e.uniqueName, e.urlName),
+    })),
+    discoveryFailed: found === undefined,
+    taken: c.environments.map((e) => e.name),
+    names: COMMON_ENVIRONMENT_NAMES,
+    draft: { currentName: current?.suggested ?? "", source: candidates.length ? "" : "custom", url: "", name: "", protected: false, nameAuto: true, protectedAuto: true },
+  };
+  if (!current) delete state.draft.currentName;
+  const result = await openEnvironmentPanel(state, [...known]);
+  if (!result) return;
+  // Re-read before writing: anything that reloaded the client while the page was open (a refresh,
+  // a connection check) replaced client.config, so edits to the old object would never be saved.
+  client.reload();
+  const cfg = client.config;
+  const currentName = result.currentName?.trim();
+  if (current && currentName && !cfg.environments.some((e) => e.name === currentName)) {
+    cfg.environments.push({ name: currentName, org: cfg.org });
+    cfg.environment = currentName;
   }
-  const name = await vscode.window.showInputBox({
-    title: "New environment: name",
-    prompt: "Like TEST, UAT, or PROD",
-    ignoreFocusOut: true,
-    validateInput: (v: string) => (!v.trim() ? "Enter a name." : c.environments.some((e) => e.name.toLowerCase() === v.trim().toLowerCase()) ? "That name is taken." : undefined),
-  });
-  if (!name) return;
-  const org = await vscode.window.showInputBox({
-    title: `New environment: ${name.trim()} org URL`,
-    placeHolder: "https://contoso-test.crm.dynamics.com",
-    ignoreFocusOut: true,
-    validateInput: (v: string) => (/^(https?:\/\/)?[\w.-]+\.[a-z]{2,}/i.test(v.trim()) ? undefined : "Enter the org URL."),
-  });
-  if (!org) return;
-  const looksProd = /prod|live/i.test(name);
-  const protect = await vscode.window.showQuickPick(
-    [
-      { label: "Ask before changes", description: "Confirm before pushes, imports, publishing, and data changes", value: true },
-      { label: "No extra confirmation", value: false },
-    ].sort((x, y) => (looksProd ? Number(y.value) - Number(x.value) : Number(x.value) - Number(y.value))),
-    { placeHolder: `Protect ${name.trim()}?` }
-  );
-  if (!protect) return;
-  c.environments.push({ name: name.trim(), org: normalizeOrg(org), ...(protect.value ? { protected: true } : {}) });
-  if (!c.environment) c.environment = c.environments[0].name;
+  const org = normalizeOrg(result.url.trim());
+  const name = result.name.trim();
+  cfg.environments.push({ name, org, ...(result.protected ? { protected: true } : {}) });
+  if (!cfg.environment) cfg.environment = cfg.environments[0].name;
   client.save();
-  void vscode.window.showInformationMessage(`Added ${name.trim()} to ${client.name}. Switch environments from the status bar or the client's menu.`);
+  if (!client.environments.some((e) => e.name === name)) throw new Error(`${name} wasn't saved to ${client.configFile}.`);
+  void vscode.window.showInformationMessage(`Added ${name} to ${client.name}. Switch environments from the Tenant view or the status bar.`);
 }

@@ -113,13 +113,18 @@
       },
       "description": "Folders (relative to this client folder) whose relative file paths are web resource names, e.g. [\"src/WebResources\"]."
     },
-    "earlyBound": {
+    "pluginDeploy": {
+      "type": "string",
+      "enum": ["", "assembly", "package"],
+      "description": "What Build and Push deploys when a plug-in project builds both a .dll and a .nupkg and the org has neither registered yet: the assembly or the package. Empty asks once and remembers."
+    },
+    "csharpClasses": {
       "type": "object",
-      "description": "C# early-bound class generation (pac modelbuilder).",
+      "description": "C# classes for plug-ins (Generate C# Classes). Settings saved under the old name earlyBound are still read.",
       "properties": {
         "outDir": {
           "type": "string",
-          "description": "Output folder relative to this client folder. A builderSettings.json here takes priority."
+          "description": "Output folder relative to this client folder."
         },
         "namespace": {
           "type": "string"
@@ -129,6 +134,29 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "scriptModels": {
+      "type": "object",
+      "description": "JavaScript or TypeScript table models for form scripts (Add to Script Model…).",
+      "properties": {
+        "outDir": {
+          "type": "string",
+          "description": "Folder for the model files, relative to this client folder."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "",
+            "js",
+            "ts"
+          ],
+          "description": "JavaScript or TypeScript. Empty: asked the first time."
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Global namespace the models go on, like Contoso.Models."
         }
       }
     },

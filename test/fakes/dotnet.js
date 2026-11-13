@@ -102,7 +102,16 @@ if (args[0] === "build") {
     for (const lib of fs.existsSync(path.join(dir, "lib")) ? fs.readdirSync(path.join(dir, "lib")) : []) {
       entries.push({ name: `lib/net462/${lib}`, data: fs.readFileSync(path.join(dir, "lib", lib)) });
     }
-    fs.writeFileSync(path.join(dir, "bin", configuration, `${id}.${pkgVersion}.nupkg`), writeZip(entries));
+    const nupkg = path.join(dir, "bin", configuration, `${id}.${pkgVersion}.nupkg`);
+    // Like the real thing: NuGet's GenerateNuspec counts the project file as its input, not the DLL that the
+    // plug-in package targets add from the publish folder, so a package newer than the project isn't made again.
+    if (fs.existsSync(nupkg) && fs.statSync(nupkg).mtimeMs >= fs.statSync(csproj).mtimeMs) {
+      console.log('  Skipping target "GenerateNuspec" because all output files are up-to-date with respect to the input files.');
+    } else {
+      fs.writeFileSync(nupkg, writeZip(entries));
+      fs.mkdirSync(path.join(dir, "obj", configuration), { recursive: true });
+      fs.writeFileSync(path.join(dir, "obj", configuration, `${id}.${pkgVersion}.nuspec`), nuspec);
+    }
   }
   console.log(`  ${assemblyName} -> ${path.join(out, `${assemblyName}.dll`)}`);
 }

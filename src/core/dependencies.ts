@@ -34,17 +34,22 @@ interface RawDependency {
 
 /**
  * What depends on a component (would break if it changed or was deleted) and what it
- * depends on, from Dataverse's own dependency tracking. Code isn't tracked there.
+ * depends on, from Dataverse's own dependency tracking. Code isn't tracked there. A list
+ * that couldn't be read comes back empty with its error, never as "nothing depends on it".
  */
 export async function fetchDependencies(
   dv: DataverseClient,
   objectId: string,
   componentType: number,
   tables: TableMeta[]
-): Promise<{ usedBy: Dependency[]; uses: Dependency[] }> {
-  const call = (fn: string) =>
-    dv.getAll<RawDependency>(`${fn}(ObjectId=@p1,ComponentType=@p2)?@p1=${objectId}&@p2=${componentType}`).catch(() => [] as RawDependency[]);
-  const [dependents, required] = await Promise.all([call("RetrieveDependentComponents"), call("RetrieveRequiredComponents")]);
+): Promise<{ usedBy: Dependency[]; uses: Dependency[]; errors: { usedBy?: string; uses?: string } }> {
+  const errors: { usedBy?: string; uses?: string } = {};
+  const call = (fn: string, side: "usedBy" | "uses") =>
+    dv.getAll<RawDependency>(`${fn}(ObjectId=@p1,ComponentType=@p2)?@p1=${objectId}&@p2=${componentType}`).catch((err: unknown) => {
+      errors[side] = err instanceof Error ? err.message : String(err);
+      return [] as RawDependency[];
+    });
+  const [dependents, required] = await Promise.all([call("RetrieveDependentComponents", "usedBy"), call("RetrieveRequiredComponents", "uses")]);
   const resolver = new NameResolver(dv, tables);
   const resolve = (rows: Array<{ id: string; type: number; parent?: string | null }>) =>
     Promise.all(dedupe(rows).map((r) => resolver.resolve(r.type, r.id, r.parent ?? undefined)));
@@ -53,7 +58,7 @@ export async function fetchDependencies(
     resolve(required.map((d) => ({ id: d.requiredcomponentobjectid, type: d.requiredcomponenttype, parent: d.requiredcomponentparentid }))),
   ]);
   const sort = (list: Dependency[]) => list.sort((a, b) => a.typeLabel.localeCompare(b.typeLabel) || a.name.localeCompare(b.name));
-  return { usedBy: sort(usedBy), uses: sort(uses) };
+  return { usedBy: sort(usedBy), uses: sort(uses), errors };
 }
 
 function dedupe<T extends { id: string; type: number }>(rows: T[]): T[] {
